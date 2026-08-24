@@ -1,0 +1,117 @@
+module sh.sysl.parsing
+
+// Expressions, by binding power.
+//
+// **This is the one part of a hand-written parser that is genuinely fiddly**, and it is about
+// eighty lines once. Written as recursive descent instead it is one function per precedence
+// level -- `parse_or`, `parse_and`, `parse_equality`, `parse_comparison`, `parse_term`,
+// `parse_factor`, `parse_unary`, `parse_call`, `parse_primary` -- each calling the next, which is
+// nine functions that all look the same and a tenth one to add whenever the language grows an
+// operator.
+//
+// The loop below replaces all of them with a number per operator. It was Vaughan Pratt's, in 1973,
+// and it is what Clang, rustc, Go, TypeScript, V8 and every other front end named in this package's
+// card use for their expression grammars.
+//
+// ## How it works, in four sentences
+//
+// Every operator has a **left binding power**: how strongly it pulls the thing on its left. The loop
+// reads one operand, then looks at the operator after it: if that operator binds more tightly than
+// the level it is running at, it takes it, and hands it the operand it has so far. The callback that
+// takes the operator then reads *its* right side by calling this loop again, at a level of its own
+// choosing. That choice is the whole of associativity -- recurse at the operator's own power and it
+// groups to the left, recurse one below it and it groups to the right.
+//
+// ## What the caller supplies
+//
+// Three functions and nothing else:
+//
+// - `nud`, for a token in **prefix** position: a literal, a name, `-x`, `(`, `[`. It is what the
+//   loop calls to get its first operand, and what a unary operator calls this loop from.
+// - `led`, for a token in **infix** position: it is handed the operand on its left, the operator
+//   token, and the stream, and it reads whatever it needs from there. Because it decides for itself
+//   what to read, postfix operators (`x!`), indexing (`x[i]`), calls (`f(a, b)`) and the ternary
+//   (`a ? b : c`) all fall out of it with nothing added here.
+// - `lbp`, the number per token. Anything that is not an infix operator answers 0, which is how the
+//   loop knows to stop.
+//
+// **There is no error type here and that is deliberate.** A grammar's node type is its own, and the
+// way a real front end reports a bad expression is with a node meaning "something was wrong here" --
+// which keeps the tree shaped, keeps the parser going, and lets one pass report everything. So the
+// callbacks return `N`, and a grammar that wants errors puts them in `N`.
+
+// A source of tokens for the loop: one to look at, one to take.
+//
+// **The token type is an associated type rather than a parameter**, which matters more than it
+// looks: with `TokenStream[T]` the token would be reachable only through the bound, and a function
+// taking bare-arrow callbacks cannot have its type arguments written out at the call. The
+// associated form leaves nothing to write.
+trait TokenStream
+    type Token
+
+    // The next token without taking it.
+    look(self) -> Option[Self::Token]
+
+    // The next token, taken.
+    take(*self) -> Option[Self::Token]
+
+// The token cursor of this package is one, so a grammar that lexed into a `Tokens[T]` has nothing
+// to write to use the loop below.
+impl[T] TokenStream for Tokens[T]
+    type Token = Spanned[T]
+
+    look(self) -> Option[Spanned[T]] = self.peek()
+
+    take(*self) -> Option[Spanned[T]] = self.advance()
+
+// What an operator does to the expression around it.
+//
+// `left` is how strongly it pulls what is on its left, and is what `lbp` answers. `right` is the
+// level its `led` recurses at, and **the difference between the two is the associativity**: equal,
+// and a second operator of the same power stops the inner loop, so `a - b - c` is `(a - b) - c`;
+// one lower, and the inner loop takes it, so `a ^ b ^ c` is `a ^ (b ^ c)`.
+struct Power
+    left: u8
+    right: u8
+
+// An operator that groups to the left, which is nearly all of them.
+left_assoc(bp: u8) -> Power = Power(bp, bp)
+
+// An operator that groups to the right: assignment, exponentiation, and the ternary's colon.
+right_assoc(bp: u8) -> Power = Power(bp, if bp == 0 then 0 else bp - 1)
+
+// The expression loop.
+//
+// `min_bp` is the level it runs at: 0 from a grammar's entry point, and whatever a `led` chose from
+// inside one. It answers `None` only when the stream was already empty, because there is then no
+// operand for `nud` to be called on and no expression to hand back.
+//
+// The callbacks are bare arrows, so a grammar passes named functions -- which is what `led` has to
+// be anyway, since it calls back into here.
+pratt[S: TokenStream, N](s: *S, min_bp: u8, nud: (S::Token, *S) -> N, led: (N, S::Token, *S) -> N,
+        lbp: S::Token -> u8) -> Option[N]
+    s.take() match
+        None -> None
+        Some(first) ->
+            var left = nud(first, s)
+
+            loop
+                s.look() match
+                    None -> break
+                    Some(t) ->
+                        val bp = lbp(t)
+
+                        // A token that is not an infix operator answers 0 and stops the loop, and so
+                        // does one that binds no more tightly than the level being run at -- which
+                        // is the comparison the whole algorithm turns on.
+                        if bp <= min_bp then break
+
+                        // The operator is taken here rather than in the callback, so that a `led`
+                        // reads only its right-hand side and every one of them is written the same
+                        // way.
+                        val _ = s.take()
+
+                        left = led(left, t, s)
+
+            Some(left)
+end pratt

@@ -1,0 +1,137 @@
+module sh.sysl.parsing
+
+import sysl.buf.{Buf, buf}
+
+// A value and where it came from.
+//
+// **Nearly everything a parser passes around wants to be one of these.** A token without its span
+// cannot be reported about; a syntax node without its span makes every later pass -- a type checker,
+// a formatter, a language server -- go back to the text and guess. Carrying the pair costs two
+// integers and removes the guessing.
+struct Spanned[T]
+    value: T
+    span: Span
+
+    // The same span over a different value, which is what a parser does when it folds a token into
+    // a node: the position survives and the thing at it changes.
+    map_to[U](self, v: U) -> Spanned[U] = Spanned(v, self.span)
+end Spanned
+
+// Two of them are equal when both halves are, which is what a test comparing a token to what it
+// should have been asks -- and it is a written block rather than something the compiler hands out,
+// because a `Spanned` of a type with no equality has none either.
+impl[T: Eq] Eq for Spanned[T]
+    eq(self, rhs: Spanned[T]) -> bool = self.span == rhs.span && self.value == rhs.value
+
+// Rendered as the value it holds and the span it came from, which is what a test failure and a
+// dump of a token stream both want to read.
+impl[T: Display] Display for Spanned[T]
+    display(self, out: *Writer, fmt: FormatSpec) = display_str(s"${self.value} @${self.span}", out, fmt)
+
+// A cursor over tokens that have already been lexed.
+//
+// **A grammar has two cursors and they are not the same shape.** `Scanner` walks bytes, where
+// lookahead is a byte and backtracking is cheap; this walks whatever the lexer produced, where
+// lookahead is a token and the interesting question is what came *before* -- the span of the token
+// just consumed, which is where "expected a `)` after this" points.
+//
+// It exists because the lex-then-parse split is the one nearly every hand-written front end takes:
+// the scanner tier turns bytes into a `Buf[Spanned[T]]`, and everything above it never looks at a
+// byte again.
+struct Tokens[T]
+    items: Buf[Spanned[T]]
+    at: usize
+
+    len(self) -> usize = self.items.len()
+
+    at_end(self) -> bool = self.at >= self.items.len()
+
+    // Where the cursor is, as an index into the token list.
+    position -> usize = self.at
+
+    // The token at the cursor, without taking it.
+    peek(self) -> Option[Spanned[T]] = self.peek_at(0)
+
+    // The token `n` further on. Two is enough for nearly every grammar and the parameter is there
+    // for the ones where it is not.
+    peek_at(self, n: usize) -> Option[Spanned[T]]
+        val i = self.at + n
+
+        if i >= self.items.len() then None else Some(self.items.at(i))
+
+    // The token at the cursor, taken.
+    advance(*self) -> Option[Spanned[T]]
+        if self.at >= self.items.len() then return None
+
+        val t = self.items.at(self.at)
+
+        self.at += 1
+        Some(t)
+    end advance
+
+    // The token at the cursor, taken only if it answers the predicate.
+    //
+    // The predicate takes the value rather than the `Spanned`, because what a grammar asks is
+    // "is this a comma", and having to write `(t) -> t.value == Comma` at every call is the noise
+    // this exists to remove.
+    accept_if(*self, p: T -> bool) -> Option[Spanned[T]]
+        self.peek() match
+            Some(t) ->
+                if p(t.value) then
+                    self.at += 1
+                    Some(t)
+                else
+                    None
+            None -> None
+    end accept_if
+
+    // Where the cursor is, in the input's own terms: the span of the token it is on, or an empty
+    // span at the end of the last one where there are no tokens left.
+    //
+    // **The second half is what makes an at-the-end message point somewhere.** A parser that runs
+    // out of tokens has nothing to point at, and pointing at the last token it *did* see is what
+    // reads as "this is where you stopped".
+    here(self) -> Span
+        self.peek() match
+            Some(t) -> t.span
+            None ->
+                if self.items.is_empty() then
+                    point(0)
+                else
+                    point(self.items.at(self.items.len() - 1).span.end)
+    end here
+
+    // The span of the token just consumed, which is where "expected something after this" points.
+    previous(self) -> Span
+        if self.at == 0 then return point(0)
+
+        self.items.at(self.at - 1).span
+    end previous
+
+    // The span from a mark to the cursor, which is a whole construct's extent: mark before parsing
+    // it, ask afterwards.
+    span_from(self, m: usize) -> Span
+        if self.items.is_empty() then return point(0)
+
+        val from = if m >= self.items.len() then self.items.len() - 1 else m
+        val to: usize = if self.at == 0 then 0 else self.at - 1
+        val last = if to >= self.items.len() then self.items.len() - 1 else to
+
+        self.items.at(from).span.to(self.items.at(last).span)
+    end span_from
+
+    mark(self) -> usize = self.at
+
+    reset(*self, m: usize)
+        self.at = if m > self.items.len() then self.items.len() else m
+
+    // One more token on the end, which is what a lexer's loop does.
+    push(*self, value: T, span: Span)
+        self.items.push(Spanned(value, span))
+end Tokens
+
+// An empty token list, to be filled by a lexer and then read by a parser.
+tokens[T]() -> Tokens[T] = Tokens(buf(), 0)
+
+// A token list over what a lexer has already gathered.
+tokens_of[T](items: Buf[Spanned[T]]) -> Tokens[T] = Tokens(items, 0)

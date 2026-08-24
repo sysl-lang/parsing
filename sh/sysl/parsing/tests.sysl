@@ -708,3 +708,217 @@ what_was_found_at_the_end_of_the_input_is_named()
     assert_eq(found_at(src, Span(0, 1)), "`a`")
     assert_eq(found_at(src, point(0)), "`a`")
 end what_was_found_at_the_end_of_the_input_is_named
+
+// -- tokens and pratt -------------------------------------------------------------------------
+
+// A whole little grammar, because the loop's contract is that a caller can write one: a lexer over
+// the scanner tier, a token cursor, three callbacks, and arithmetic that comes out with the right
+// answer. Nothing below is scaffolding this package provides -- it is what a consumer writes.
+
+private enum Tok
+    Num(v: long)
+    Plus
+    Minus
+    Star
+    Slash
+    Caret
+    Bang
+    Open
+    Close
+end Tok
+
+private lex_expr(text: string) -> Tokens[Tok]
+    var s = scanner_of(text)
+    var ts: Tokens[Tok] = tokens()
+
+    loop
+        s.skip_space()
+
+        val m = s.mark()
+
+        s.next() match
+            None -> break
+            Some(c) ->
+                if is_digit(c) then
+                    s.reset(m)
+
+                    read_integer(&s) match
+                        Ok(v) -> ts.push(Num(long(v)), s.span_from(m))
+                        Err(_) -> break
+                elif c == u8('+') then
+                    ts.push(Plus, s.span_from(m))
+                elif c == u8('-') then
+                    ts.push(Minus, s.span_from(m))
+                elif c == u8('*') then
+                    ts.push(Star, s.span_from(m))
+                elif c == u8('/') then
+                    ts.push(Slash, s.span_from(m))
+                elif c == u8('^') then
+                    ts.push(Caret, s.span_from(m))
+                elif c == u8('!') then
+                    ts.push(Bang, s.span_from(m))
+                elif c == u8('(') then
+                    ts.push(Open, s.span_from(m))
+                elif c == u8(')') then
+                    ts.push(Close, s.span_from(m))
+                else
+                    break
+
+    ts
+end lex_expr
+
+// What each operator does to what is around it. `Bang` is postfix and `Open` is a call bracket, and
+// neither needs anything of the loop beyond a number.
+private power_of(t: Tok) -> Power
+    t match
+        Plus -> left_assoc(10)
+        Minus -> left_assoc(10)
+        Star -> left_assoc(20)
+        Slash -> left_assoc(20)
+        Caret -> right_assoc(30)
+        Bang -> left_assoc(40)
+        _ -> left_assoc(0)
+end power_of
+
+private is_close(t: Tok) -> bool
+    t match
+        Close -> true
+        _ -> false
+
+private is_plus(t: Tok) -> bool
+    t match
+        Plus -> true
+        _ -> false
+
+private is_minus(t: Tok) -> bool
+    t match
+        Minus -> true
+        _ -> false
+
+private expr_lbp(t: Spanned[Tok]) -> u8 = power_of(t.value).left
+
+private expr_nud(t: Spanned[Tok], s: *Tokens[Tok]) -> long
+    t.value match
+        Num(v) -> v
+        // Prefix minus binds more tightly than any infix operator here, which is what makes
+        // `-2 ^ 2` read as `(-2) ^ 2` -- a decision the grammar takes by choosing the level it
+        // recurses at, and not one the loop has an opinion about.
+        Minus -> -expr(s, 35)
+        Open ->
+            val inner = expr(s, 0)
+
+            val _ = s.accept_if(is_close)
+
+            inner
+        _ -> 0
+end expr_nud
+
+private expr_led(left: long, t: Spanned[Tok], s: *Tokens[Tok]) -> long
+    val bp = power_of(t.value).right
+
+    t.value match
+        Plus -> left + expr(s, bp)
+        Minus -> left - expr(s, bp)
+        Star -> left * expr(s, bp)
+        Slash -> left / expr(s, bp)
+        Caret -> ipow(left, expr(s, bp))
+        // Postfix: it reads nothing at all, which is the whole of what makes it postfix.
+        Bang -> factorial(left)
+        _ -> left
+end expr_led
+
+private expr(s: *Tokens[Tok], min_bp: u8) -> long =
+    pratt(s, min_bp, expr_nud, expr_led, expr_lbp).unwrap_or(0)
+
+private ipow(b: long, e: long) -> long
+    var r: long = 1
+
+    for _ in 0..<e
+        r = r * b
+
+    r
+end ipow
+
+private factorial(n: long) -> long
+    var r: long = 1
+
+    for i in 2..n
+        r = r * i
+
+    r
+end factorial
+
+private eval(text: string) -> long
+    var ts = lex_expr(text)
+
+    expr(&ts, 0)
+end eval
+
+@test
+precedence_falls_out_of_the_numbers()
+    assert_eq(eval("1 + 2 * 3"), 7)
+    assert_eq(eval("2 * 3 + 1"), 7)
+    assert_eq(eval("(1 + 2) * 3"), 9)
+    assert_eq(eval("100 / 5 / 2"), 10)
+end precedence_falls_out_of_the_numbers
+
+// Left and right association are one number apart and nothing else, which is the claim the whole
+// module rests on.
+@test
+association_is_the_difference_between_two_numbers()
+    assert_eq(eval("8 - 4 - 2"), 2)
+    assert_eq(eval("2 ^ 3 ^ 2"), 512)
+    assert_eq(eval("2 ^ 3 * 2"), 16)
+end association_is_the_difference_between_two_numbers
+
+// A callback that reads nothing is a postfix operator, and one that reads a bracket is a call --
+// neither of which the loop knows anything about.
+@test
+prefix_and_postfix_are_the_callbacks_business()
+    assert_eq(eval("-3 + 1"), -2)
+    assert_eq(eval("-2 ^ 2"), 4)
+    assert_eq(eval("4 ! + 1"), 25)
+    assert_eq(eval("3 * 4 !"), 72)
+end prefix_and_postfix_are_the_callbacks_business
+
+@test
+an_empty_stream_has_no_expression()
+    var ts: Tokens[Tok] = tokens()
+
+    assert_eq(pratt(&ts, 0, expr_nud, expr_led, expr_lbp), None)
+end an_empty_stream_has_no_expression
+
+@test
+a_token_cursor_knows_where_it_is()
+    var ts = lex_expr("1 + 22")
+
+    assert_eq(ts.len(), 3)
+    assert_eq(ts.here(), Span(0, 1))
+
+    val m = ts.mark()
+
+    assert_eq(ts.advance().unwrap().span, Span(0, 1))
+    assert_eq(ts.previous(), Span(0, 1))
+    assert_eq(ts.peek_at(1).unwrap().span, Span(4, 6))
+
+    ts.advance()
+    ts.advance()
+    assert(ts.at_end(), "the end")
+    assert_eq(ts.here(), Span(6, 6))
+    assert_eq(ts.span_from(m), Span(0, 6))
+
+    ts.reset(m)
+    assert_eq(ts.position, 0)
+end a_token_cursor_knows_where_it_is
+
+@test
+a_predicate_takes_a_token_only_when_it_matches()
+    var ts = lex_expr("+ -")
+
+    // `Tok` carries a payload, so it has no equality unless one is written -- and an `impl` may not
+    // sit in a `@tests` file. What a test of a cursor actually needs is whether it moved, which is
+    // this.
+    assert(ts.accept_if(is_minus).is_none(), "not a minus")
+    assert(ts.accept_if(is_plus).is_some(), "the plus")
+    assert_eq(ts.position, 1)
+end a_predicate_takes_a_token_only_when_it_matches
