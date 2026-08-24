@@ -114,7 +114,7 @@ struct Tokens[T]
         if self.items.is_empty() then return point(0)
 
         val from = if m >= self.items.len() then self.items.len() - 1 else m
-        val to: usize = if self.at == 0 then 0 else self.at - 1
+        val to = if self.at == 0 then 0 else self.at - 1
         val last = if to >= self.items.len() then self.items.len() - 1 else to
 
         self.items.at(from).span.to(self.items.at(last).span)

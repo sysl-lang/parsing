@@ -3,7 +3,7 @@ module sh.sysl.parsing
 import sysl.text.chars_of
 
 // The two bytes of a Windows line ending, as a slice to match against rather than a pair to test.
-private val crlf: []const u8 = [13u8, 10u8]
+private val crlf: []const u8 = [u8('\r'), u8('\n')]
 
 // The cursor every grammar starts with.
 //
@@ -249,7 +249,7 @@ struct Scanner
     accept_newline(*self) -> bool
         if self.accept_seq(crlf) then return true
 
-        self.accept(10) || self.accept(13)
+        self.accept(u8('\n')) || self.accept(u8('\r'))
 
     // The rest of the line and its terminator.
     skip_line(*self)
@@ -335,7 +335,9 @@ struct Scanner
     // resumes in the right place nearly always beats reporting the next fifty errors.
     //
     // `Ok` is the span of the region, brackets included; `Err` is the span from the opening bracket
-    // to the end of the input where nothing closed it.
+    // to the end of the input where nothing closed it. **A cursor that was not on the opening
+    // bracket at all is an empty `Err` at the cursor**, so the two are told apart by asking the span
+    // whether it is empty -- nothing moved in that case and the caller's alternative is still open.
     skip_balanced(*self, open: u8, close: u8) -> Result[Span, Span]
         val start = self.at
 

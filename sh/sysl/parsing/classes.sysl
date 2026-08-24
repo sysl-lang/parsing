@@ -46,7 +46,7 @@ is_space(c: u8) -> bool = c.is_space()
 // `is_space` would step over the newline it is looking for.
 is_blank(c: u8) -> bool = c.is_blank()
 
-is_newline(c: u8) -> bool = c == 10 || c == 13
+is_newline(c: u8) -> bool = c == u8('\n') || c == u8('\r')
 
 // The two halves of an identifier, in the shape nearly every language has kept since C: a letter or
 // an underscore to start, and letters, digits or underscores after it.

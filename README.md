@@ -41,12 +41,12 @@ Name it in your project's `package.hocon` and `sysl build` fetches it:
 
 ```hocon
 dependencies {
-  parsing { git = "github.com/sysl-lang/parsing", version = "0.1.0" }
+  parsing { git = "github.com/sysl-lang/parsing", version = "0.2.0" }
 }
 ```
 
 The coordinate is an identity rather than a URL, so it carries no `https://`, and `version` is the
-tag `v0.1.0` here.
+tag `v0.2.0` here. It needs sysl 0.0.76 or newer, for the reason `package.hocon` gives.
 
 Or build it into an artifact and compile against that, which needs no fetching:
 

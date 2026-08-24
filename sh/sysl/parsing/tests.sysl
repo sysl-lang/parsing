@@ -367,7 +367,10 @@ a_refusal_underlines_what_was_wrong()
     read_char_literal(&w, u8('\'')) match
         Ok(_) -> assert(false, "nothing between the quotes")
         // Both quotes: what is wrong is the pair, and there is nothing between them to point at.
-        Err(e) -> assert_eq(where(e), Span(0, 2))
+        // And what it says is about characters, since that is what the reader was asked for.
+        Err(e) ->
+            assert_eq(where(e), Span(0, 2))
+            assert_eq(str(e), "not a character")
 
     var x = scanner_of("99999999999999999999999")
 
@@ -566,6 +569,16 @@ identifiers_are_read_as_spans()
     assert_eq(s.offset, 3)
 end identifiers_are_read_as_spans
 
+// `is_empty` answers `true` for a span whose end is before its start, so `len` answers zero for one
+// rather than the wrapped subtraction a `usize` would otherwise give.
+@test
+a_span_that_is_the_wrong_way_round_has_no_length()
+    assert_eq(Span(5, 3).len(), 0)
+    assert(Span(5, 3).is_empty(), "empty")
+    assert_eq(point(4).len(), 0)
+    assert_eq(Span(2, 6).len(), 4)
+end a_span_that_is_the_wrong_way_round_has_no_length
+
 @test
 brackets_are_counted_past()
     var s = scanner_of("(a(b)c)rest")
@@ -723,6 +736,48 @@ a_report_sorts_by_position_and_stops_at_its_limit()
         "sorted and truncated")
 end a_report_sorts_by_position_and_stops_at_its_limit
 
+// Two diagnostics at one place are an error and the thing that explains it, so the order the parser
+// produced them in is the order that reads -- and `sort_by` is the unstable sort, which says in its
+// own documentation that equal elements may come back in any order. Twenty of them is past the
+// sixteen below which it falls back to insertion sort and is stable by accident.
+@test
+a_report_keeps_the_order_it_was_given_at_one_place()
+    val src = source_of("t", "x")
+    var r = full_report()
+    var want = ""
+
+    for i in 0..<20
+        r.add(error(point(0), s"m${i}"))
+
+    for i in 0..<20
+        if i > 0 then want = want + "\n"
+
+        want = want + s"error: m${i}\n --> t:1:1\n  |\n1 | x\n  | ^\n"
+
+    same(r.render(src), want, "the order the parser produced them")
+
+    // And rendering is a reading rather than a writing: a caller that renders a report and then
+    // walks it gets what it added, in the order it added it.
+    assert_eq(r.items.at(0).message, "m0")
+    assert_eq(r.items.at(19).message, "m19")
+end a_report_keeps_the_order_it_was_given_at_one_place
+
+// A line's text stops before its terminator and a `\r\n` is two bytes, so a span pointing at the
+// second of them is further into the line than the line's own text goes. The caret is measured off
+// that text, and the measurement must not walk past the end of it.
+@test
+a_caret_survives_a_span_inside_a_windows_line_ending()
+    val src = source_of("t", "ab\r\ncd\r\n")
+
+    same(error(point(3), "here").render(src),
+        "error: here\n" +
+        " --> t:1:4\n" +
+        "  |\n" +
+        "1 | ab\n" +
+        "  |   ^\n",
+        "a caret at the end of the line's own text")
+end a_caret_survives_a_span_inside_a_windows_line_ending
+
 @test
 a_report_of_warnings_alone_is_not_a_failure()
     var r = report()
@@ -828,11 +883,6 @@ private is_close(t: Tok) -> bool
 private is_plus(t: Tok) -> bool
     t match
         Plus -> true
-        _ -> false
-
-private is_minus(t: Tok) -> bool
-    t match
-        Minus -> true
         _ -> false
 
 private expr_lbp(t: Spanned[Tok]) -> u8 = power_of(t.value).left
@@ -958,12 +1008,27 @@ a_predicate_takes_a_token_only_when_it_matches()
     // `Tok` carries a payload, so it has no equality unless one is written -- and an `impl` may not
     // sit in a `@tests` file. What a test of a cursor actually needs is whether it moved, which is
     // this.
-    assert(ts.accept_if(is_minus).is_none(), "not a minus")
+    //
+    // Both spellings, as the scanner's own predicate test does above: a closure whose body is a
+    // `match`, and a named predicate where the name is worth having.
+    assert(ts.accept_if((t) -> t match
+        Minus -> true
+        _ -> false).is_none(), "not a minus")
     assert(ts.accept_if(is_plus).is_some(), "the plus")
     assert_eq(ts.position, 1)
 end a_predicate_takes_a_token_only_when_it_matches
 
 // -- layout -----------------------------------------------------------------------------------
+
+// One `D` per block closed.
+private dedents(n: usize) -> string
+    var out = ""
+
+    for _ in 0..<n
+        out = out + "D"
+
+    out
+end dedents
 
 // A whole indentation pass in twenty lines, which is what the module is for: `I` where a block
 // opened, `D` per block closed, `N` at the end of a logical line, `R` where a line lined up with
@@ -986,14 +1051,10 @@ private dents(text: string) -> string
             val step = l.line(indent.columns) match
                 Same -> ""
                 Deeper -> "I"
-                Shallower(n) ->
-                    var closed = ""
-
-                    for _ in 0..<n
-                        closed = closed + "D"
-
-                    closed
-                Ragged -> "R"
+                Shallower(n) -> dedents(n)
+                // A ragged line closed real blocks on its way down, so a lexer emits their `DEDENT`s
+                // and then says the line lined up with nothing.
+                Ragged(n) -> dedents(n) + "R"
 
             out = out + step
 
@@ -1039,8 +1100,22 @@ end blank_lines_are_not_lines
 // levels. A pass that quietly closed the nearest one would turn it into a parse error elsewhere.
 @test
 a_line_that_lines_up_with_nothing_is_named()
-    assert_eq(dents("a\n    b\n  c\n"), "NINRN")
+    assert_eq(dents("a\n    b\n  c\n"), "NINDRN")
 end a_line_that_lines_up_with_nothing_is_named
+
+// A ragged line has closed the levels it came down through, and a lexer has to emit a `DEDENT` for
+// each of them or its blocks stop matching the layout's. The count is what makes that possible.
+@test
+a_ragged_line_says_how_many_blocks_it_closed()
+    var l = layout()
+
+    assert_eq(l.line(0), Same)
+    assert_eq(l.line(4), Deeper)
+    assert_eq(l.line(8), Deeper)
+    assert_eq(l.depth(), 2)
+    assert_eq(l.line(2), Ragged(2))
+    assert_eq(l.depth(), 0)
+end a_ragged_line_says_how_many_blocks_it_closed
 
 // Without this rule `f(a,\n  b)` is a syntax error in every language that has both features.
 @test

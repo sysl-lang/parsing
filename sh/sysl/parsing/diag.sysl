@@ -119,7 +119,14 @@ struct Diagnostic
         // span itself. A span of nothing -- something that is missing rather than wrong -- still
         // gets one caret, because a message pointing at zero characters points at nothing.
         val line_start = src.line_span(from.line).start
-        val before: usize = if self.span.start > line_start then self.span.start - line_start else 0
+        val offset = if self.span.start > line_start then self.span.start - line_start else 0
+
+        // **A line's text stops before its terminator, and a `\r\n` is two bytes**, so a span
+        // pointing at the second of them is further along the line than there is text to measure.
+        // Clamping puts the caret at the end of the line, which is where such a span means; without
+        // it the two slices below read past the end of the line and the render is a crash, in the
+        // one case -- a parser over Windows text -- that a report is most needed for.
+        val before = if offset > line_text.len then line_text.len else offset
         val within = if self.span.end - self.span.start > line_text.len - before then
                 line_text.len - before
             else
@@ -192,19 +199,19 @@ escape_text(bytes: []const u8) -> string
     for i in 0..<bytes.len
         val c = bytes[i]
 
-        if c == 10 then
+        if c == u8('\n') then
             push_text(&out, "\\n")
-        elif c == 13 then
+        elif c == u8('\r') then
             push_text(&out, "\\r")
-        elif c == 9 then
+        elif c == u8('\t') then
             push_text(&out, "\\t")
-        elif c == 0 then
+        elif c == u8('\0') then
             push_text(&out, "\\0")
         elif c == u8('\\') then
             push_text(&out, "\\\\")
         elif c == u8('`') then
             push_text(&out, "\\`")
-        elif c < 32 || c == 127 then
+        elif is_control(c) then
             push_text(&out, "\\x")
             out.push(hex_digit(c >> 4))
             out.push(hex_digit(c & 15))
@@ -221,10 +228,19 @@ escape_text(bytes: []const u8) -> string
     from_utf8_lossy(out.view())
 end escape_text
 
-private hex_digit(v: u8) -> u8 = if v < 10 then v + 48 else v + 87
+private hex_digit(v: u8) -> u8 = if v < 10 then v + u8('0') else v - 10 + u8('a')
 
 private push_text(out: *Buf[u8], text: string)
     out.extend(text.bytes)
+
+// Where a diagnostic is and where it was added, which is the key a report is ordered on.
+//
+// **The index is half the key rather than a tie-break**, since the sort it goes through is the
+// unstable one: ordering on the pair makes every key distinct, so what comes back is the order the
+// parser produced them in whatever that sort does with equal ones.
+private struct Placed
+    start: usize
+    index: usize
 
 // Everything one parse had to say.
 //
@@ -258,21 +274,30 @@ struct Report
 
     // Sorted by where they are, printed up to the limit, with a count of what was left out.
     //
-    // The sort is by position and is stable in the way that matters: two diagnostics at the same
-    // place stay in the order the parser produced them, which is the order that reads as an
-    // explanation -- the error first and its note second.
+    // **Two diagnostics at the same place stay in the order the parser produced them**, which is the
+    // order that reads as an explanation -- the error first and the thing that explains it second.
+    // That is `Placed` above rather than a stable sort: `sysl.slices.sort_by` is the unstable one and
+    // says so, and above sixteen equal elements it genuinely reorders them.
+    //
+    // **It sorts a table of positions and not the report**, so rendering a report is a reading of it:
+    // a caller that prints one and then walks its items gets them in the order it added them.
     render(self, src: Source) -> string
         var b = str_builder()
-        val xs = self.items.view()
+        var order: Buf[Placed] = buf()
 
-        sort_by(xs, (a, b2) -> a.span.start < b2.span.start)
+        for i in 0..<self.items.len()
+            order.push(Placed(self.items.at(i).span.start, i))
+
+        val xs = order.view()
+
+        sort_by(xs, (p, q) -> p.start < q.start || (p.start == q.start && p.index < q.index))
 
         val shown = if self.limit == 0 || self.limit > xs.len then xs.len else self.limit
 
         for i in 0..<shown
             if i > 0 then b.push("\n")
 
-            b.push(xs[i].render(src))
+            b.push(self.items.at(xs[i].index).render(src))
 
         if shown < xs.len then
             b.push(s"\nshowing the first ${shown} of ${xs.len}\n")

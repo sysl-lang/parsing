@@ -32,7 +32,10 @@ struct Span
     start: usize
     end: usize
 
-    len(self) -> usize = self.end - self.start
+    // **Zero rather than a wrapped subtraction where the end is before the start**, which is the
+    // same case `is_empty` already answers `true` for: a span assembled out of two that arrived the
+    // wrong way round is empty, and a length of eighteen quintillion is not a better answer.
+    len(self) -> usize = if self.end > self.start then self.end - self.start else 0
 
     is_empty(self) -> bool = self.end <= self.start
 
@@ -142,7 +145,7 @@ struct Source
 
         // The table steps past a `\n`, so the byte before the next line's start is that newline and
         // is already excluded. What is left to trim is the `\r` of a `\r\n` pair.
-        if end > start && self.bytes[end - 1] == 13 then end -= 1
+        if end > start && self.bytes[end - 1] == u8('\r') then end -= 1
 
         Span(start, end)
     end line_span
@@ -166,7 +169,7 @@ source(name: string, bytes: []const u8) -> Source
     starts.push(0)
 
     for i in 0..<bytes.len
-        if bytes[i] == 10 then starts.push(i + 1)
+        if bytes[i] == u8('\n') then starts.push(i + 1)
 
     Source(name, bytes, starts)
 end source

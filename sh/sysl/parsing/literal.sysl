@@ -1,7 +1,8 @@
 module sh.sysl.parsing
 
 import sysl.buf.{Buf, buf}
-import sysl.text.{Ascii, char_from_u32, from_utf8, parse_real, str_builder}
+import sysl.slices.contains
+import sysl.text.{Ascii, char_from_u32, parse_real, str_builder}
 
 // Numbers and quoted text, read off a `Scanner`.
 //
@@ -220,11 +221,18 @@ end read_integer
 // range does not have to be written with a space in it. An `e` is part of it only when digits, or a
 // sign and then digits, follow.
 //
-// **The float path costs one allocation and the integer path costs none.** A float's value has to
-// come from `strtod`, which reads text, so the run is copied out with its underscores removed and
-// converted; the integers are accumulated in place. Correct rounding is worth a copy, and writing a
+// **Neither path allocates unless the float was written with separators in it.** A float's value
+// has to come from `strtod`, which reads text -- but the run in the input is already the text, so it
+// goes straight there; only `1_000.5` is copied, to take the underscores out. The integers are
+// accumulated in place. Correct rounding is worth a copy where one is needed, and writing a
 // decimal-to-binary conversion by hand is how a language ends up with `0.1 + 0.2` disagreeing with
 // every other language on the machine.
+//
+// **It cost three allocations until sysl 0.0.76, and this file is what said so.** The `parse_*`
+// family took a `string`, so the stripped run had to be built into one and `strtod` then wanted a
+// NUL-terminated copy of that -- three pieces of heap for a value whose text is a dozen bytes. The
+// family grew a `[]const u8` form, so the buffer above goes straight to it and the terminator is
+// written into a stack array.
 read_number(s: *Scanner) -> Result[Number, LitError]
     val start = s.offset
     var real_shaped = false
@@ -277,21 +285,29 @@ read_number(s: *Scanner) -> Result[Number, LitError]
         Err(e) -> Err(e)
 end read_number
 
-// The text of a float, underscores removed, through the library's one converter.
+// The text of a float through the library's one converter, with any separators taken out.
+//
+// **A run with no `_` in it goes straight to the converter and is not copied**, which is nearly
+// every float anybody writes; only a separated one costs the buffer, and only because `strtod` would
+// stop at the underscore and report the rest as trailing garbage.
 private to_real(run: []const u8) -> Option[real]
+    if !contains(run, u8('_')) then return real_of(run)
+
     var b: Buf[u8] = buf()
 
     for i in 0..<run.len
         if run[i] != u8('_') then b.push(run[i])
 
-    // The run is digits, a dot and a sign, so it is ASCII and the validation cannot refuse it.
-    from_utf8(b.view()) match
-        Ok(t) ->
-            parse_real(t) match
-                Ok(x) -> Some(x)
-                Err(_) -> None
-        Err(_) -> None
+    real_of(b.view())
 end to_real
+
+// The converter's `Result` as an `Option`. Which refusal it was does not survive, and does not need
+// to: the run was scanned as a number, so the only thing left for the converter to object to is a
+// value this machine cannot hold -- which is what the caller reports as `BadReal`.
+private real_of(text: []const u8) -> Option[real]
+    parse_real(text) match
+        Ok(x) -> Some(x)
+        Err(_) -> None
 
 // -- quoted text ----------------------------------------------------------------------------------
 
@@ -462,8 +478,10 @@ read_char_literal(s: *Scanner, quote: u8) -> Result[char, LitError]
     val c = s.peek() match
         None -> return Err(Unterminated(s.span_from(start)))
         Some(b) ->
-            // `''` is a literal holding nothing, and the whole of it is what to underline.
-            if b == quote then return Err(NoDigits(Span(start, s.offset + 1)))
+            // `''` is a literal holding nothing, and the whole of it is what to underline. It is
+            // `BadCodepoint` rather than `NoDigits` because the two render, and a reader told
+            // "no digits" about a character literal is being answered a question they did not ask.
+            if b == quote then return Err(BadCodepoint(Span(start, s.offset + 1)))
 
             if b == u8('\\') then
                 read_escape(s) match

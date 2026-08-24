@@ -13,7 +13,7 @@
 // This is the block a *consumer* writes to reach this package:
 //
 //     dependencies {
-//       parsing { git = "github.com/sysl-lang/parsing", version = "0.1.0" }
+//       parsing { git = "github.com/sysl-lang/parsing", version = "0.2.0" }
 //     }
 //
 // The coordinate names the package, `parsing`; the module a program imports is `sh.sysl.parsing`.
@@ -23,8 +23,25 @@
 
 package {
   name    = "parsing"
-  version = "0.1.0"
+  version = "0.2.0"
+
+  // **The oldest compiler this builds with, and it is a released one.** Three of 0.0.76's changes
+  // are written into these files rather than merely available to them: a `match` standing as an
+  // argument in `tests.sysl`, a branch that takes its type from its sibling in `diag.sysl`,
+  // `layout.sysl` and `tokens.sysl`, and `sysl.text.parse_real` reading a `[]const u8` in
+  // `literal.sysl`. The first is a parse error on an older compiler and the last is an unresolved
+  // call, so the floor is stated here rather than left to a reader to work out from a diagnostic.
+  //
+  // **This package is what raised all three.** Writing it is what found them, which is the argument
+  // for a package existing at all: the toolkit is the first thing in the org that reads text for a
+  // living, so it is the first thing to notice what reading text is awkward to write.
+  sysl = "0.0.76"
 }
+
+// **0.2.0 rather than 0.1.1, because one thing in it is not compatible.** `Dent.Ragged` carries the
+// number of blocks the ragged line closed, where it used to carry nothing -- a grammar matching on
+// it has to be changed. Nothing else here moves: the two bug fixes and the sweep are all behaviour a
+// caller wanted anyway.
 
 // **`heap = true`, and the reason is one field.** `Source` holds a line-start table, and how many
 // lines an input has is not known until it has been read, so the table is a `Buf[usize]`. Everything

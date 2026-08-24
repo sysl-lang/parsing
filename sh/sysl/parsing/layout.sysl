@@ -31,13 +31,19 @@ enum Dent
     // This many blocks closed.
     Shallower(levels: usize)
     // A line that lines up with nothing: it is less indented than the line before it and does not
-    // match any level still open.
+    // match any level still open. The count is how many blocks it closed on the way down.
     //
     // **It is a case of its own because it is the one indentation mistake a person actually makes**
     // -- a body pulled back to a column between two open ones, usually after moving code -- and a
     // pass that quietly closed the nearest level would turn it into a parse error somewhere else
     // entirely.
-    Ragged
+    //
+    // **It carries a count for the same reason `Shallower` does**, which is the half that is easy to
+    // leave out: the levels above the line really have been closed, so a lexer emitting a `DEDENT`
+    // per level has to emit them here too. Reporting the mistake is the grammar's business; keeping
+    // its block nesting in step with the layout's is not optional, and a case carrying nothing left
+    // it no way to.
+    Ragged(levels: usize)
 end Dent
 
 // A variant carrying a payload takes its equality out of the compiler's hands, so it is written --
@@ -58,9 +64,9 @@ impl Eq for Dent
                 rhs match
                     Shallower(b) -> a == b
                     _ -> false
-            Ragged ->
+            Ragged(a) ->
                 rhs match
-                    Ragged -> true
+                    Ragged(b) -> a == b
                     _ -> false
     end eq
 
@@ -70,7 +76,7 @@ impl Display for Dent
             Same -> "the same"
             Deeper -> "deeper"
             Shallower(_) -> "shallower"
-            Ragged -> "ragged"
+            Ragged(_) -> "ragged"
 
         display_str(text, out, fmt)
     end display
@@ -98,16 +104,16 @@ measure_indent(s: *Scanner, tab_width: usize) -> Indent
     var columns: usize = 0
     var tabs: usize = 0
     var spaces: usize = 0
-    val w: usize = if tab_width == 0 then 1 else tab_width
+    val w = if tab_width == 0 then 1 else tab_width
 
     loop
         s.peek() match
             Some(c) ->
-                if c == 32 then
+                if c == u8(' ') then
                     columns += 1
                     spaces += 1
                     s.bump()
-                elif c == 9 then
+                elif c == u8('\t') then
                     columns = (columns / w + 1) * w
                     tabs += 1
                     s.bump()
@@ -172,7 +178,9 @@ struct Layout
         // deliberate choice about recovery: the line is at *some* column and the levels it is inside
         // are gone, so the layout carries on from the nearest level below it and the grammar reports
         // one error. Leaving the stack as it was would have made every following line ragged too.
-        if column != self.columns.at(self.columns.len() - 1) then return Ragged
+        // The count of what was popped goes with the answer, so a lexer closes exactly what the
+        // layout closed.
+        if column != self.columns.at(self.columns.len() - 1) then return Ragged(closed)
 
         Shallower(closed)
     end line
