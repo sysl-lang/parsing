@@ -1,0 +1,175 @@
+module sh.sysl.parsing
+
+import sysl.text.Ascii
+
+// The byte tests a grammar asks over and over, as functions and as sets.
+//
+// **They are free functions rather than members because that is what a predicate parameter takes.**
+// `sysl.text.Ascii` already answers every question below and answers it as a member, so
+// `c.is_digit()` is what a program writes when it has a byte in hand -- but `s.accept_while(...)`
+// wants a *function*, and a member is not one. The alternative at every call is
+// `s.accept_while((c) -> c.is_digit())`, which is three characters of noise per call and reads as
+// though something subtle is happening.
+//
+// **A `ByteSet` is the same question asked faster.** A predicate is a call per byte; a set is four
+// words on the stack and one shift-and-test, and it can be built out of a predicate once
+// (`byte_set_where(is_ident_cont)`) and used for the rest of the program. For a run of a few bytes
+// the difference is nothing; for a lexer over a file it is the inner loop.
+
+// -- predicates -------------------------------------------------------------------------------
+
+is_digit(c: u8) -> bool = c.is_digit()
+
+is_hex_digit(c: u8) -> bool = c.is_hex_digit()
+
+is_octal_digit(c: u8) -> bool = c >= u8('0') && c <= u8('7')
+
+is_binary_digit(c: u8) -> bool = c == u8('0') || c == u8('1')
+
+is_alpha(c: u8) -> bool = c.is_alpha()
+
+is_alnum(c: u8) -> bool = c.is_alnum()
+
+is_upper(c: u8) -> bool = c.is_upper()
+
+is_lower(c: u8) -> bool = c.is_lower()
+
+is_punct(c: u8) -> bool = c.is_punct()
+
+is_control(c: u8) -> bool = c.is_control()
+
+// Space, tab, newline, carriage return, form feed and vertical tab -- C's `isspace`, which is what
+// every text format on the machine means by whitespace.
+is_space(c: u8) -> bool = c.is_space()
+
+// Space and tab alone. **A grammar where the end of a line means something wants this one**, since
+// `is_space` would step over the newline it is looking for.
+is_blank(c: u8) -> bool = c.is_blank()
+
+is_newline(c: u8) -> bool = c == 10 || c == 13
+
+// The two halves of an identifier, in the shape nearly every language has kept since C: a letter or
+// an underscore to start, and letters, digits or underscores after it.
+//
+// **A language that admits Greek or emoji in an identifier cannot use these**, because the question
+// is then about characters rather than bytes -- and it is one `Scanner.next_char` and a test of the
+// caller's own. What these are is the common case, written once.
+is_ident_start(c: u8) -> bool = c.is_alpha() || c == u8('_')
+
+is_ident_cont(c: u8) -> bool = c.is_alnum() || c == u8('_')
+
+// Any byte that is part of a multi-byte character, which is what a byte-oriented lexer treats as
+// "some letter I do not have to look at": every byte of a UTF-8 sequence is 0x80 or above, and no
+// ASCII byte is.
+is_non_ascii(c: u8) -> bool = c >= 128
+
+// -- sets -------------------------------------------------------------------------------------
+
+// Which of the 256 bytes are in it, as four words.
+//
+// It is a value rather than a handle: it is copied where it is passed, holds no storage of its own
+// and can sit in a `val` at the top of a module beside the grammar that uses it.
+struct ByteSet
+    lo: u64
+    lo_hi: u64
+    hi_lo: u64
+    hi: u64
+
+    has(self, c: u8) -> bool
+        val w = c >> 6
+        val bit = 1u64 << u64(c & 63)
+
+        if w == 0 then
+            (self.lo & bit) != 0
+        elif w == 1 then
+            (self.lo_hi & bit) != 0
+        elif w == 2 then
+            (self.hi_lo & bit) != 0
+        else
+            (self.hi & bit) != 0
+    end has
+
+    // The same set with one more byte in it, which is how a set is built up in a `val` without a
+    // mutable variable.
+    with(self, c: u8) -> ByteSet
+        val w = c >> 6
+        val bit = 1u64 << u64(c & 63)
+
+        if w == 0 then
+            ByteSet(self.lo | bit, self.lo_hi, self.hi_lo, self.hi)
+        elif w == 1 then
+            ByteSet(self.lo, self.lo_hi | bit, self.hi_lo, self.hi)
+        elif w == 2 then
+            ByteSet(self.lo, self.lo_hi, self.hi_lo | bit, self.hi)
+        else
+            ByteSet(self.lo, self.lo_hi, self.hi_lo, self.hi | bit)
+    end with
+
+    union(self, rhs: ByteSet) -> ByteSet =
+        ByteSet(self.lo | rhs.lo, self.lo_hi | rhs.lo_hi, self.hi_lo | rhs.hi_lo, self.hi | rhs.hi)
+
+    intersect(self, rhs: ByteSet) -> ByteSet =
+        ByteSet(self.lo & rhs.lo, self.lo_hi & rhs.lo_hi, self.hi_lo & rhs.hi_lo, self.hi & rhs.hi)
+
+    // Every byte that is not in it -- `skip_until` written as `accept_while` of the complement, and
+    // the reason there is no separate "until" member taking a set.
+    invert(self) -> ByteSet = ByteSet(~self.lo, ~self.lo_hi, ~self.hi_lo, ~self.hi)
+
+    without(self, rhs: ByteSet) -> ByteSet = self.intersect(rhs.invert())
+
+    is_empty(self) -> bool = (self.lo | self.lo_hi | self.hi_lo | self.hi) == 0
+
+    // How many bytes are in it, which is what a table of sets is checked with rather than something
+    // a grammar asks at run time.
+    size(self) -> usize
+        var n: usize = 0
+
+        for i in 0..<256
+            if self.has(u8(i)) then n += 1
+
+        n
+    end size
+end ByteSet
+
+// The set with nothing in it, to be built up with `with`.
+empty_set() -> ByteSet = ByteSet(0, 0, 0, 0)
+
+// The set of these bytes: `byte_set("+-*/".bytes)`.
+byte_set(bytes: []const u8) -> ByteSet
+    var s = empty_set()
+
+    for i in 0..<bytes.len
+        s = s.with(bytes[i])
+
+    s
+end byte_set
+
+// The same from text, because a set is nearly always written as a literal.
+byte_set_of(text: string) -> ByteSet = byte_set(text.bytes)
+
+// Every byte from `lo` to `hi`, both included -- `byte_range(u8('a'), u8('z'))`.
+byte_range(lo: u8, hi: u8) -> ByteSet
+    var s = empty_set()
+
+    if lo > hi then return s
+
+    for i in usize(lo)..usize(hi)
+        s = s.with(u8(i))
+
+    s
+end byte_range
+
+// Every byte a predicate answers for.
+//
+// **This is what makes the predicates above and the sets one thing rather than two.** A grammar
+// writes its rule once, as a function, and turns it into a table where the table is worth having:
+// `private val ident_cont = byte_set_where(is_ident_cont)` costs 256 calls at start-up and nothing
+// afterwards.
+byte_set_where(p: u8 -> bool) -> ByteSet
+    var s = empty_set()
+
+    for i in 0..<256
+        if p(u8(i)) then s = s.with(u8(i))
+
+    s
+end byte_set_where

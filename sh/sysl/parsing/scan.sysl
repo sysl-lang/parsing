@@ -2,6 +2,9 @@ module sh.sysl.parsing
 
 import sysl.text.chars_of
 
+// The two bytes of a Windows line ending, as a slice to match against rather than a pair to test.
+private val crlf: []const u8 = [13u8, 10u8]
+
 // The cursor every grammar starts with.
 //
 // A `Scanner` is a slice and an offset, and it allocates nothing -- so it is the part of this
@@ -163,6 +166,194 @@ struct Scanner
 
         self.at - start
     end skip_until
+
+    // -- sets ---------------------------------------------------------------------------------
+
+    // One byte, if it is in the set. The set form of `accept_any`, and the one to reach for where
+    // the set is a `val` at the top of the file rather than a literal at the call.
+    accept_set(*self, set: ByteSet) -> bool
+        if self.at < self.src.len && set.has(self.src[self.at]) then
+            self.at += 1
+            true
+        else
+            false
+    end accept_set
+
+    // As many bytes as are in the set, and how many that was.
+    accept_while_set(*self, set: ByteSet) -> usize
+        val start = self.at
+
+        while self.at < self.src.len && set.has(self.src[self.at])
+            self.at += 1
+
+        self.at - start
+    end accept_while_set
+
+    // Up to the first byte that is in the set, stopping **on** it -- `skip_until` over a table
+    // rather than over a literal, for the same recovery job.
+    skip_until_set(*self, set: ByteSet) -> usize
+        val start = self.at
+
+        while self.at < self.src.len && !set.has(self.src[self.at])
+            self.at += 1
+
+        self.at - start
+    end skip_until_set
+
+    // How far a predicate would go, without going there. It is what a lexer asks when the length of
+    // a run decides which token it is -- one `-` against two, a run of `=` in a fence -- and the
+    // alternative is a mark and a reset around `accept_while`.
+    peek_while(self, p: u8 -> bool) -> usize
+        var i = self.at
+
+        while i < self.src.len && p(self.src[i])
+            i += 1
+
+        i - self.at
+    end peek_while
+
+    // Where the next occurrence of a byte is, as an absolute offset, or nothing. Nothing moves.
+    find(self, c: u8) -> Option[usize]
+        var i = self.at
+
+        while i < self.src.len
+            if self.src[i] == c then return Some(i)
+
+            i += 1
+
+        None
+    end find
+
+    // -- whitespace, lines and comments -------------------------------------------------------
+
+    // Whitespace of every kind, newlines included.
+    skip_space(*self) -> usize = self.accept_while(is_space)
+
+    // Spaces and tabs only, which is what a grammar that ends a statement at the end of the line
+    // wants: the newline it is looking for is left where it is.
+    skip_blanks(*self) -> usize = self.accept_while(is_blank)
+
+    // Whether the cursor is at the end of a line -- either on its terminator or at the end of the
+    // input, since the last line of a file need not have one.
+    at_line_end(self) -> bool
+        self.peek() match
+            Some(c) -> is_newline(c)
+            None -> true
+
+    // Up to the end of the line, stopping on the terminator.
+    skip_to_line_end(*self) -> usize = self.accept_until(is_newline)
+
+    // One line terminator, consumed. **`\r\n` is one and not two**, which is the whole reason this
+    // is a member: a grammar counting lines, or ending a statement at a newline, sees one ending on
+    // a file written on either kind of machine.
+    accept_newline(*self) -> bool
+        if self.accept_seq(crlf) then return true
+
+        self.accept(10) || self.accept(13)
+
+    // The rest of the line and its terminator.
+    skip_line(*self)
+        self.skip_to_line_end()
+        self.accept_newline()
+
+    // A comment that runs to the end of the line, if one starts here -- `//`, `#`, `--`, `;`,
+    // whichever the grammar's is. The terminator is left, so a language where a newline is a token
+    // still sees it.
+    skip_line_comment(*self, open: []const u8) -> bool
+        if !self.accept_seq(open) then return false
+
+        self.skip_to_line_end()
+        true
+    end skip_line_comment
+
+    // A bracketed comment, if one starts here, with nesting if the language has it.
+    //
+    // The answer is three-way and the third case is the one worth having: `Ok(false)` for "that was
+    // not a comment", `Ok(true)` for one that closed, and `Err(span)` for one that ran off the end
+    // of the input -- which is a real diagnostic in every language that has this form, and which a
+    // `bool` would have had to lose.
+    skip_block_comment(*self, open: []const u8, close: []const u8, nested: bool) -> Result[bool, Span]
+        val start = self.at
+
+        if !self.accept_seq(open) then return Ok(false)
+
+        var depth = 1
+
+        while depth > 0
+            if self.at_end() then return Err(Span(start, self.src.len))
+
+            if nested && self.accept_seq(open) then
+                depth += 1
+            elif self.accept_seq(close) then
+                depth -= 1
+            else
+                self.at += 1
+
+        Ok(true)
+    end skip_block_comment
+
+    // -- words --------------------------------------------------------------------------------
+
+    // An identifier, if one starts here: one byte answering `start`, then every byte answering
+    // `cont`. The span is the identifier's own text, which is what a grammar looks up in its
+    // keyword table.
+    read_ident(*self, start: u8 -> bool, cont: u8 -> bool) -> Option[Span]
+        val from = self.at
+
+        if !self.accept_if(start) then return None
+
+        self.accept_while(cont)
+        Some(self.span_from(from))
+    end read_ident
+
+    // A keyword, **only where it is the whole word**.
+    //
+    // `accept_seq("if".bytes)` matches the first two bytes of `ifx` and is how a lexer comes to have
+    // a keyword swallow the front of an identifier. This looks one byte further and refuses when the
+    // word runs on, which is the check every language needs and nearly every hand-written lexer
+    // forgets once.
+    accept_word(*self, word: []const u8, cont: u8 -> bool) -> bool
+        if !self.starts_with(word) then return false
+
+        self.peek_at(word.len) match
+            Some(c) ->
+                if cont(c) then return false
+            None -> ()
+
+        self.at += word.len
+        true
+    end accept_word
+
+    // -- brackets -----------------------------------------------------------------------------
+
+    // Past a bracketed region, counting nesting, with the cursor on the opening bracket.
+    //
+    // **It is a recovery primitive and not a parser.** It counts brackets and nothing else -- a
+    // bracket inside a string literal or a comment counts, because knowing that it should not is
+    // knowing the grammar. What it is for is the moment after something was refused, where the
+    // useful thing is to get past the whole argument list and carry on: an approximation that
+    // resumes in the right place nearly always beats reporting the next fifty errors.
+    //
+    // `Ok` is the span of the region, brackets included; `Err` is the span from the opening bracket
+    // to the end of the input where nothing closed it.
+    skip_balanced(*self, open: u8, close: u8) -> Result[Span, Span]
+        val start = self.at
+
+        if !self.accept(open) then return Err(point(start))
+
+        var depth = 1
+
+        while depth > 0
+            self.next() match
+                None -> return Err(Span(start, self.src.len))
+                Some(c) ->
+                    if c == open then
+                        depth += 1
+                    elif c == close then
+                        depth -= 1
+
+        Ok(self.span_from(start))
+    end skip_balanced
 
     // -- characters ---------------------------------------------------------------------------
 

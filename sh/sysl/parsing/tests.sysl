@@ -367,3 +367,344 @@ a_character_literal_holds_exactly_one()
 
     assert(read_char_literal(&w, u8('\'')).is_err(), "two characters")
 end a_character_literal_holds_exactly_one
+
+// -- classes ----------------------------------------------------------------------------------
+
+@test
+a_byte_set_holds_what_was_put_in_it()
+    val s = byte_set_of("+-*/")
+
+    assert(s.has(u8('+')), "plus")
+    assert(s.has(u8('/')), "slash")
+    assert(!s.has(u8('x')), "not x")
+    assert_eq(s.size(), 4)
+    assert(empty_set().is_empty(), "nothing in the empty set")
+end a_byte_set_holds_what_was_put_in_it
+
+@test
+a_set_covers_every_byte_and_not_only_the_ascii_ones()
+    val s = byte_set_where(is_non_ascii)
+
+    assert(s.has(255), "the last byte")
+    assert(s.has(128), "the first non-ascii one")
+    assert(!s.has(127), "not the last ascii one")
+    assert_eq(s.size(), 128)
+end a_set_covers_every_byte_and_not_only_the_ascii_ones
+
+@test
+sets_combine()
+    val letters = byte_range(u8('a'), u8('z'))
+    val digits = byte_set_where(is_digit)
+    val both = letters.union(digits)
+
+    assert_eq(letters.size(), 26)
+    assert_eq(both.size(), 36)
+    assert_eq(both.intersect(digits).size(), 10)
+    assert_eq(both.without(digits).size(), 26)
+    assert_eq(letters.invert().size(), 230)
+    assert(!letters.invert().has(u8('a')), "the complement")
+end sets_combine
+
+@test
+identifier_classes_are_the_c_family_ones()
+    assert(is_ident_start(u8('_')), "underscore starts one")
+    assert(!is_ident_start(u8('9')), "a digit does not")
+    assert(is_ident_cont(u8('9')), "a digit continues one")
+end identifier_classes_are_the_c_family_ones
+
+// -- scanner helpers --------------------------------------------------------------------------
+
+@test
+a_set_drives_the_cursor()
+    val ident = byte_set_where(is_ident_cont)
+    var s = scanner_of("name_1 rest")
+
+    assert_eq(s.accept_while_set(ident), 6)
+    assert(!s.accept_set(ident), "a space is not in it")
+    assert_eq(s.skip_until_set(byte_set_of("t")), 4)
+end a_set_drives_the_cursor
+
+@test
+looking_ahead_moves_nothing()
+    var s = scanner_of("===x")
+
+    assert_eq(s.peek_while((c) -> c == u8('=')), 3)
+    assert_eq(s.offset, 0)
+    assert_eq(s.find(u8('x')), Some(3))
+    assert_eq(s.find(u8('q')), None)
+    assert_eq(s.offset, 0)
+end looking_ahead_moves_nothing
+
+@test
+blanks_stop_at_a_newline_and_space_does_not()
+    var s = scanner_of("  \n  x")
+
+    assert_eq(s.skip_blanks(), 2)
+    assert(s.at_line_end(), "on the newline")
+
+    var t = scanner_of("  \n  x")
+
+    assert_eq(t.skip_space(), 5)
+    assert_eq(t.peek(), Some(u8('x')))
+end blanks_stop_at_a_newline_and_space_does_not
+
+// A file written on either kind of machine has to look the same to a grammar that counts lines.
+@test
+crlf_is_one_line_ending()
+    var s = scanner_of("a\r\nb\nc")
+    var lines = 0
+
+    while !s.at_end()
+        s.skip_to_line_end()
+
+        if s.accept_newline() then lines += 1
+
+    assert_eq(lines, 2)
+end crlf_is_one_line_ending
+
+@test
+comments_run_to_the_end_of_the_line()
+    var s = scanner_of("// gone\nkept")
+
+    assert(s.skip_line_comment("//".bytes), "a comment")
+    assert(s.at_line_end(), "stopped on the newline")
+    assert(!s.skip_line_comment("//".bytes), "not a comment")
+
+    s.accept_newline()
+    assert_eq(s.peek(), Some(u8('k')))
+end comments_run_to_the_end_of_the_line
+
+@test
+block_comments_nest_when_the_language_says_they_do()
+    var s = scanner_of("/* a /* b */ c */x")
+
+    assert_eq(s.skip_block_comment("/*".bytes, "*/".bytes, true), Ok(true))
+    assert_eq(s.peek(), Some(u8('x')))
+
+    var t = scanner_of("/* a /* b */ c */x")
+
+    assert_eq(t.skip_block_comment("/*".bytes, "*/".bytes, false), Ok(true))
+    assert_eq(t.peek(), Some(u8(' ')))
+
+    var u = scanner_of("plain")
+
+    assert_eq(u.skip_block_comment("/*".bytes, "*/".bytes, false), Ok(false))
+    assert_eq(u.offset, 0)
+end block_comments_nest_when_the_language_says_they_do
+
+@test
+a_comment_that_never_closes_reports_where_it_started()
+    var s = scanner_of("x /* forever")
+
+    s.skip(2)
+    assert_eq(s.skip_block_comment("/*".bytes, "*/".bytes, false), Err(Span(2, 12)))
+end a_comment_that_never_closes_reports_where_it_started
+
+// The check every hand-written lexer forgets once: a keyword that swallows the front of a longer
+// identifier.
+@test
+a_keyword_is_only_a_keyword_when_the_word_ends()
+    var s = scanner_of("ifx")
+
+    assert(!s.accept_word("if".bytes, is_ident_cont), "ifx is not if")
+    assert_eq(s.offset, 0)
+
+    var t = scanner_of("if (")
+
+    assert(t.accept_word("if".bytes, is_ident_cont), "if is")
+    assert_eq(t.offset, 2)
+
+    var u = scanner_of("if")
+
+    assert(u.accept_word("if".bytes, is_ident_cont), "at the end of the input")
+end a_keyword_is_only_a_keyword_when_the_word_ends
+
+@test
+identifiers_are_read_as_spans()
+    var s = scanner_of("_x9 +")
+
+    assert_eq(s.read_ident(is_ident_start, is_ident_cont), Some(Span(0, 3)))
+    assert_eq(s.read_ident(is_ident_start, is_ident_cont), None)
+    assert_eq(s.offset, 3)
+end identifiers_are_read_as_spans
+
+@test
+brackets_are_counted_past()
+    var s = scanner_of("(a(b)c)rest")
+
+    assert_eq(s.skip_balanced(u8('('), u8(')')), Ok(Span(0, 7)))
+    assert_eq(s.peek(), Some(u8('r')))
+
+    var t = scanner_of("(a(b)c")
+
+    assert_eq(t.skip_balanced(u8('('), u8(')')), Err(Span(0, 6)))
+end brackets_are_counted_past
+
+// -- diag -------------------------------------------------------------------------------------
+
+// Compare, and say what the difference was. A rendering's whole contract is its exact text, so a
+// failure that only said `false` would leave the reader diffing by eye.
+private same(got: string, want: string, what: string, file: string = __FILE__, line: long = __LINE__)
+    if got != want
+        print("\n")
+        print(what)
+        print("\nwanted:\n")
+        print(want)
+        print("got:\n")
+        print(got)
+
+    assert(got == want, what, file, line)
+end same
+
+private val json: string = "{\n  \"a\": 1,\n  \"b\": ,\n}\n"
+
+@test
+a_diagnostic_renders_the_way_the_compiler_does()
+    val src = source_of("config.json", json)
+    val d = expected(Span(19, 20), "a value", found_at(src, Span(19, 20)))
+        .with_note("a value is a number, a string, `true`, `false`, `null`, an array or an object")
+
+    same(d.render(src),
+        "error: expected a value\n" +
+        " --> config.json:3:8\n" +
+        "  |\n" +
+        "3 |   \"b\": ,\n" +
+        "  |        ^ found `,`\n" +
+        "  |\n" +
+        "  = note: a value is a number, a string, `true`, `false`, `null`, an array or an object\n",
+        "the whole rendering")
+end a_diagnostic_renders_the_way_the_compiler_does
+
+@test
+a_caret_is_as_wide_as_its_span()
+    val src = source_of("t", "let xyz = 1")
+
+    same(error(Span(4, 7), "unknown name").render(src),
+        "error: unknown name\n" +
+        " --> t:1:5\n" +
+        "  |\n" +
+        "1 | let xyz = 1\n" +
+        "  |     ^^^\n",
+        "three carets")
+end a_caret_is_as_wide_as_its_span
+
+// A span of nothing is something *missing*, and a message pointing at zero characters points at
+// nothing -- so it still gets one caret.
+@test
+a_point_still_gets_a_caret()
+    val src = source_of("t", "f(1")
+
+    same(error(point(3), "unclosed bracket").render(src),
+        "error: unclosed bracket\n" +
+        " --> t:1:4\n" +
+        "  |\n" +
+        "1 | f(1\n" +
+        "  |    ^\n",
+        "one caret past the end")
+end a_point_still_gets_a_caret
+
+// The caret is placed by display width rather than by byte count, so a line with wide characters in
+// it still points at the right thing.
+@test
+a_caret_lands_under_wide_characters()
+    val src = source_of("t", "val 日本 = x")
+
+    same(error(Span(11, 12), "here").render(src),
+        "error: here\n" +
+        " --> t:1:8\n" +
+        "  |\n" +
+        "1 | val 日本 = x\n" +
+        "  |          ^\n",
+        "past two wide characters")
+end a_caret_lands_under_wide_characters
+
+// What a multi-line span usually means is an unterminated something, and the useful place to point
+// is where it started -- so the caret stops at the end of the first line.
+@test
+a_span_over_several_lines_is_drawn_against_its_first()
+    val src = source_of("t", "\"abc\ndef\n")
+
+    same(error(Span(0, 9), "unterminated string").render(src),
+        "error: unterminated string\n" +
+        " --> t:1:1\n" +
+        "  |\n" +
+        "1 | \"abc\n" +
+        "  | ^^^^\n",
+        "capped at the line")
+end a_span_over_several_lines_is_drawn_against_its_first
+
+@test
+the_gutter_is_as_wide_as_the_line_number()
+    var text = ""
+
+    for _ in 0..<9
+        text = text + "x\n"
+
+    text = text + "boom\n"
+
+    val src = source_of("t", text)
+
+    same(error(Span(18, 22), "here").render(src),
+        "error: here\n" +
+        "  --> t:10:1\n" +
+        "   |\n" +
+        "10 | boom\n" +
+        "   | ^^^^\n",
+        "a two-digit gutter")
+end the_gutter_is_as_wide_as_the_line_number
+
+@test
+a_report_sorts_by_position_and_stops_at_its_limit()
+    val src = source_of("t", "abcdef")
+    var r = report()
+
+    r.limit = 2
+
+    r.add(error(Span(4, 5), "third"))
+    r.add(error(Span(0, 1), "first"))
+    r.add(error(Span(2, 3), "second"))
+
+    assert_eq(r.len(), 3)
+    assert(r.has_errors(), "errors")
+    same(r.render(src),
+        "error: first\n" +
+        " --> t:1:1\n" +
+        "  |\n" +
+        "1 | abcdef\n" +
+        "  | ^\n" +
+        "\n" +
+        "error: second\n" +
+        " --> t:1:3\n" +
+        "  |\n" +
+        "1 | abcdef\n" +
+        "  |   ^\n" +
+        "\n" +
+        "showing the first 2 of 3\n",
+        "sorted and truncated")
+end a_report_sorts_by_position_and_stops_at_its_limit
+
+@test
+a_report_of_warnings_alone_is_not_a_failure()
+    var r = report()
+
+    r.add(warning(point(0), "careful"))
+    assert(!r.has_errors(), "no errors")
+    assert(!r.is_empty(), "not empty")
+    assert(report().is_empty(), "a fresh report")
+end a_report_of_warnings_alone_is_not_a_failure
+
+@test
+quoting_the_input_cannot_rearrange_a_message()
+    assert_eq(escape_text("a\nb\tc".bytes), "a\\nb\\tc")
+    assert_eq(escape_text("\u{1}".bytes), "\\x01")
+    assert_eq(escape_text("héllo".bytes), "héllo")
+end quoting_the_input_cannot_rearrange_a_message
+
+@test
+what_was_found_at_the_end_of_the_input_is_named()
+    val src = source_of("t", "ab")
+
+    assert_eq(found_at(src, point(2)), "the end of the input")
+    assert_eq(found_at(src, Span(0, 1)), "`a`")
+    assert_eq(found_at(src, point(0)), "`a`")
+end what_was_found_at_the_end_of_the_input_is_named

@@ -1,0 +1,300 @@
+module sh.sysl.parsing
+
+import sysl.buf.{Buf, buf}
+import sysl.slices.sort_by
+import sysl.text.{columns, from_utf8_lossy, str_builder, StrBuilder}
+
+// Saying where the mistake was.
+//
+// **A parser that reports its first error and stops is a parser people fight with**, and the whole
+// of the difference is in this file: a diagnostic that names a place, quotes the line, points at the
+// span and stops after a handful is the difference between a tool that helps and one that has to be
+// re-run once per mistake.
+//
+// The rendering is the one the sysl compiler itself prints, because everybody in this organisation
+// already reads it and because it has been through the argument:
+//
+//     error: expected a value
+//      --> config.json:3:14
+//       |
+//     3 |   "a": 1, "b": ,
+//       |                ^ found a comma
+//       |
+//       = note: a value is a number, a string, `true`, `false`, `null`, an array or an object
+//
+// **Nothing here is coloured.** ANSI belongs to the program that knows where its output is going --
+// a file, a pipe, a terminal, an editor's problem list -- and a library that emitted escape codes
+// would be making that decision for it. `sysl.term` is where a caller reaches for the colours.
+
+// How much a diagnostic matters.
+//
+// Four rather than two, because `note` and `help` are what a *good* message is made of: the error
+// says what is wrong, and the note says what would have been right. A caller that has only two
+// levels ignores the other two.
+enum Severity
+    Error
+    Warning
+    Note
+    Help
+end Severity
+
+impl Display for Severity
+    display(self, out: *Writer, fmt: FormatSpec)
+        val text = self match
+            Error -> "error"
+            Warning -> "warning"
+            Note -> "note"
+            Help -> "help"
+
+        display_str(text, out, fmt)
+    end display
+
+// One thing to say about one place.
+//
+// **The three pieces of text are three different jobs and a message that runs them together is the
+// usual mistake.** `message` is the headline and is read on its own in a list of problems, so it
+// says what is wrong rather than what was found. `label` sits under the caret, where the reader is
+// already looking at the offending text, so it is short and concrete. `note` is the paragraph
+// underneath that explains the rule -- the part a beginner needs once and an expert skips.
+//
+// The two that a diagnostic may not have are empty strings rather than `Option`s, because every
+// caller would otherwise write `Some` around every label it does have.
+struct Diagnostic
+    severity: Severity
+    span: Span
+    message: string
+    label: string
+    note: string
+
+    // The same diagnostic with a label under its caret.
+    with_label(self, text: string) -> Diagnostic =
+        Diagnostic(self.severity, self.span, self.message, text, self.note)
+
+    // The same diagnostic with a note under it.
+    with_note(self, text: string) -> Diagnostic =
+        Diagnostic(self.severity, self.span, self.message, self.label, text)
+
+    is_error(self) -> bool = self.severity == Error
+
+    // The whole thing rendered against the input it is about.
+    //
+    // Everything that makes the rendering line up is measured here rather than assumed: the gutter
+    // is as wide as the line number it holds, and the caret is placed by the **display width** of
+    // the text before it, so a line with a tab or a wide character in it still has the caret under
+    // the right thing. That is `sysl.text.columns`, the Unicode width data, and it is the same
+    // measurement `sysl.table` lays its columns out with.
+    //
+    // A span covering more than one line is drawn against its first line and its caret stops at the
+    // end of that line: what a multi-line span usually means is an unterminated something, and the
+    // useful place to point is where it started.
+    render(self, src: Source) -> string
+        val from = src.locate(self.span.start)
+        val line_text = src.line_text(from.line)
+        val number = str(from.line)
+        val gutter = number.bytes.len
+        var b = str_builder()
+
+        b.push(str(self.severity))
+        b.push(": ")
+        b.push(self.message)
+        b.push("\n")
+        pad(&b, gutter)
+        b.push("--> ")
+        b.push(src.name)
+        b.push(":")
+        b.push(number)
+        b.push(":")
+        b.push(str(from.col))
+        b.push("\n")
+        bar(&b, gutter)
+        b.push("\n")
+        b.push(number)
+        b.push(" | ")
+        b.push(from_utf8_lossy(line_text))
+        b.push("\n")
+        bar(&b, gutter)
+        b.push(" ")
+
+        // The caret's own line: the width of everything before the span, then a run as wide as the
+        // span itself. A span of nothing -- something that is missing rather than wrong -- still
+        // gets one caret, because a message pointing at zero characters points at nothing.
+        val line_start = src.line_span(from.line).start
+        val before: usize = if self.span.start > line_start then self.span.start - line_start else 0
+        val within = if self.span.end - self.span.start > line_text.len - before then
+                line_text.len - before
+            else
+                self.span.end - self.span.start
+
+        pad(&b, columns(line_text[0..<before]))
+
+        val width = columns(line_text[before..<before + within])
+
+        pad_with(&b, if width == 0 then 1 else width, u8('^'))
+
+        if self.label != "" then
+            b.push(" ")
+            b.push(self.label)
+
+        b.push("\n")
+
+        if self.note != "" then
+            bar(&b, gutter)
+            b.push("\n")
+            pad(&b, gutter + 1)
+            b.push("= note: ")
+            b.push(self.note)
+            b.push("\n")
+
+        b.finish()
+    end render
+end Diagnostic
+
+// The three that get written most, as functions rather than as a constructor with five arguments.
+error(span: Span, message: string) -> Diagnostic = Diagnostic(Error, span, message, "", "")
+
+warning(span: Span, message: string) -> Diagnostic = Diagnostic(Warning, span, message, "", "")
+
+hint(span: Span, message: string) -> Diagnostic = Diagnostic(Help, span, message, "", "")
+
+// The message every parser writes, in the words every parser writes it in.
+//
+// **`found` is the half that is usually wrong**, because the obvious thing to write there is the
+// byte that was actually under the cursor -- which reads as `found ''` at the end of the input and
+// as `found ' '` when the real problem was a missing comma three tokens back. `found_at` below is
+// what to pass, and it answers "the end of the input" where there is nothing there.
+expected(span: Span, want: string, found: string) -> Diagnostic =
+    error(span, s"expected $want").with_label(s"found $found")
+
+// What is at a place, quoted, for the `found` half of a message.
+//
+// A span of nothing, or one at the end of the input, is "the end of the input" rather than an empty
+// pair of quotes. Anything else is the text itself in backticks, with its escapes put back so that
+// a newline reads as `\n` and does not break the line the message is on.
+found_at(src: Source, span: Span) -> string
+    if span.start >= src.bytes.len then return "the end of the input"
+
+    val end = if span.end > span.start then span.end else span.start + 1
+    val stop = if end > src.bytes.len then src.bytes.len else end
+
+    s"`${escape_text(src.bytes[span.start..<stop])}`"
+end found_at
+
+// A run of bytes with its control characters written the way a literal would write them, so that a
+// message quoting the input cannot rearrange itself.
+//
+// It is the inverse of `read_escape` for the cases that matter in a message, and it is deliberately
+// not the inverse of all of it: a tab is `\t` and a byte that is not text is `\xHH`, while an
+// ordinary character -- including an accented or a Chinese one -- is copied through, because the
+// message is for a person and `\u{4e2d}` helps nobody.
+escape_text(bytes: []const u8) -> string
+    var out: Buf[u8] = buf()
+
+    for i in 0..<bytes.len
+        val c = bytes[i]
+
+        if c == 10 then
+            push_text(&out, "\\n")
+        elif c == 13 then
+            push_text(&out, "\\r")
+        elif c == 9 then
+            push_text(&out, "\\t")
+        elif c == 0 then
+            push_text(&out, "\\0")
+        elif c == u8('\\') then
+            push_text(&out, "\\\\")
+        elif c == u8('`') then
+            push_text(&out, "\\`")
+        elif c < 32 || c == 127 then
+            push_text(&out, "\\x")
+            out.push(hex_digit(c >> 4))
+            out.push(hex_digit(c & 15))
+        else
+            // **The byte is copied rather than rebuilt as a character**, which is the whole reason
+            // this walks bytes and gathers bytes: a lead byte read as a codepoint and re-encoded
+            // becomes two bytes of mojibake, and the accented text a message was quoting comes out
+            // as the wrong thing entirely.
+            out.push(c)
+
+    // The input is whatever the parser was handed, so it need not be well-formed -- a message about
+    // a file that is not text is exactly the case that must not panic. What a lossy decode does with
+    // a bad byte is name it U+FFFD, which is the right thing to show a reader.
+    from_utf8_lossy(out.view())
+end escape_text
+
+private hex_digit(v: u8) -> u8 = if v < 10 then v + 48 else v + 87
+
+private push_text(out: *Buf[u8], text: string)
+    out.extend(text.bytes)
+
+// Everything one parse had to say.
+//
+// **A report exists to be truncated.** A grammar that resumes after an error produces a great many
+// of them, most of which are the first one seen again from a slightly different place, and the
+// twentieth is never read. So the report holds them all, sorts them by where they are, and prints
+// the first few with a line saying how many there were -- which is what the sysl compiler does and
+// what `showing the first 5 of 23` means when you see it.
+struct Report
+    items: Buf[Diagnostic]
+
+    // How many are printed. Five is what this organisation's tools use, and it is a field rather
+    // than a constant because a batch job that wants all of them says so.
+    limit: usize
+
+    add(*self, d: Diagnostic)
+        self.items.push(d)
+
+    len(self) -> usize = self.items.len()
+
+    is_empty(self) -> bool = self.items.is_empty()
+
+    // Whether anything in it was an error, which is what decides an exit status -- a report of
+    // warnings alone is a successful run.
+    has_errors(self) -> bool
+        for i in 0..<self.items.len()
+            if self.items.at(i).is_error() then return true
+
+        false
+    end has_errors
+
+    // Sorted by where they are, printed up to the limit, with a count of what was left out.
+    //
+    // The sort is by position and is stable in the way that matters: two diagnostics at the same
+    // place stay in the order the parser produced them, which is the order that reads as an
+    // explanation -- the error first and its note second.
+    render(self, src: Source) -> string
+        var b = str_builder()
+        val xs = self.items.view()
+
+        sort_by(xs, (a, b2) -> a.span.start < b2.span.start)
+
+        val shown = if self.limit == 0 || self.limit > xs.len then xs.len else self.limit
+
+        for i in 0..<shown
+            if i > 0 then b.push("\n")
+
+            b.push(xs[i].render(src))
+
+        if shown < xs.len then
+            b.push(s"\nshowing the first ${shown} of ${xs.len}\n")
+
+        b.finish()
+    end render
+end Report
+
+// An empty report that will print five.
+report() -> Report = Report(buf(), 5)
+
+// An empty report that will print as many as it is given.
+full_report() -> Report = Report(buf(), 0)
+
+private pad(b: *StrBuilder, n: usize)
+    pad_with(b, n, u8(' '))
+
+private pad_with(b: *StrBuilder, n: usize, c: u8)
+    for _ in 0..<n
+        b.push_char(char(u32(c)))
+
+// The `  |` that separates the message from the text it is about.
+private bar(b: *StrBuilder, gutter: usize)
+    pad(b, gutter + 1)
+    b.push("|")
