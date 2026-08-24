@@ -81,6 +81,26 @@ enum Number
     Real(v: real)
 end Number
 
+impl Eq for Number
+    eq(self, rhs: Number) -> bool
+        self match
+            Int(a) ->
+                rhs match
+                    Int(b) -> a == b
+                    _ -> false
+            Real(a) ->
+                rhs match
+                    Real(b) -> a == b
+                    _ -> false
+    end eq
+
+impl Display for Number
+    display(self, out: *Writer, fmt: FormatSpec)
+        self match
+            Int(v) -> display_str(str(v), out, fmt)
+            Real(x) -> display_str(str(x), out, fmt)
+    end display
+
 // The largest value the accumulation may hold. Written as a `val` with the type on it because
 // `18446744073709551615` is not an `int` and cannot be one.
 private val ulong_max: ulong = 18446744073709551615

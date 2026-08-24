@@ -1,0 +1,348 @@
+module sh.sysl.parsing
+@tests
+
+import sysl.buf.{Buf, buf}
+import sysl.text.str_builder
+
+// A whole JSON reader, written the way a consumer writes one.
+//
+// **It is here because a library of parsing helpers is only worth what a real grammar built on it is
+// worth**, and JSON is the smallest grammar that exercises the whole scanner tier: a cursor, spans,
+// numbers, quoted text with escapes, nesting, and a diagnostic when it goes wrong. Everything below
+// is what a *caller* writes -- nothing in it is provided by the package -- and it is about a hundred
+// and thirty lines, which is the number the card that asked for this package was arguing about.
+//
+// **Where JSON's rules are narrower than the readers', the narrowing is done here**, which is the
+// package's whole position on policy: `read_escape` knows the C family's escapes and JSON has eight
+// of them, so this checks the byte after the backslash itself; `read_number` reads underscores and
+// radix prefixes and JSON has neither, so this looks at the text it consumed and refuses those.
+// Neither is a flag on the reader.
+
+private enum Json
+    Null
+    Bool(b: bool)
+    Num(x: real)
+    Str(s: string)
+    Arr(items: Buf[&Json])
+    Obj(keys: Buf[string], values: Buf[&Json])
+end Json
+
+// The reader is a `Scanner`, a `Source` for the messages, and nothing else -- no state of its own,
+// because everything a recursive-descent parser needs is in its own recursion.
+private struct Reader
+    src: Source
+    s: Scanner
+end Reader
+
+private json_value(r: *Reader) -> Result[Json, Diagnostic]
+    r.s.skip_space()
+
+    r.s.peek() match
+        None -> Err(expected(r.s.here(), "a value", "the end of the input"))
+        Some(c) ->
+            if c == u8('{') then
+                json_object(r)
+            elif c == u8('[') then
+                json_array(r)
+            elif c == u8('"') then
+                json_string(r) match
+                    Ok(t) -> Ok(Str(t))
+                    Err(d) -> Err(d)
+            elif c == u8('t') then
+                json_word(r, "true", Bool(true))
+            elif c == u8('f') then
+                json_word(r, "false", Bool(false))
+            elif c == u8('n') then
+                json_word(r, "null", Null)
+            elif c == u8('-') || is_digit(c) then
+                json_number(r)
+            else
+                Err(expected(Span(r.s.offset, r.s.offset + 1), "a value",
+                    found_at(r.src, Span(r.s.offset, r.s.offset + 1))))
+end json_value
+
+// A bare word, which has to be the whole word: `truely` is not `true` followed by anything.
+private json_word(r: *Reader, word: string, v: Json) -> Result[Json, Diagnostic]
+    val m = r.s.mark()
+
+    if r.s.accept_word(word.bytes, is_ident_cont) then return Ok(v)
+
+    r.s.accept_while(is_ident_cont)
+    Err(expected(r.s.span_from(m), s"`$word`", found_at(r.src, r.s.span_from(m))))
+end json_word
+
+// JSON's numbers are a narrower shape than `read_number`'s, and the narrowing is three tests over
+// the text it consumed rather than three flags on the reader.
+private json_number(r: *Reader) -> Result[Json, Diagnostic]
+    val m = r.s.mark()
+    val negative = r.s.accept(u8('-'))
+
+    read_number(&r.s) match
+        Err(e) -> Err(error(where(e), str(e)))
+        Ok(n) ->
+            val span = r.s.span_from(m)
+            val text = r.src.text(span)
+            val digits = if negative then text[1..<text.len] else text
+
+            for i in 0..<digits.len
+                if digits[i] == u8('_') then
+                    return Err(error(span, "a number may not have underscores in it"))
+
+            if digits.len > 1 && digits[0] == u8('0') then
+                if is_digit(digits[1]) then
+                    return Err(error(span, "a number may not have a leading zero"))
+
+                val fraction = digits[1] == u8('.') || digits[1] == u8('e') || digits[1] == u8('E')
+
+                if !fraction then
+                    return Err(error(span, "a number may not have a radix prefix")
+                        .with_note("JSON's numbers are decimal, so `0x10` is not sixteen"))
+
+            val x = n match
+                Int(v) -> real(v)
+                Real(v) -> v
+
+            Ok(Num(if negative then -x else x))
+end json_number
+
+// JSON has eight escapes and `read_escape` knows fifteen, so the byte after the backslash is checked
+// here before the shared reader is trusted with it.
+private val json_escapes: ByteSet = byte_set_of("\"\\/bfnrtu")
+
+private json_string(r: *Reader) -> Result[string, Diagnostic]
+    val start = r.s.offset
+
+    if !r.s.accept(u8('"')) then
+        return Err(expected(r.s.here(), "a string", found_at(r.src, r.s.here())))
+
+    var b = str_builder()
+
+    loop
+        r.s.peek() match
+            None -> return Err(error(Span(start, r.s.offset), "unterminated string"))
+            Some(c) ->
+                if c == u8('"') then
+                    r.s.bump()
+                    break
+                elif c == u8('\\') then
+                    val at = r.s.offset
+                    val ok = r.s.peek_at(1) match
+                        Some(e) -> json_escapes.has(e)
+                        None -> false
+
+                    if !ok then
+                        r.s.skip(2)
+                        return Err(error(Span(at, r.s.offset), "not one of JSON's escapes")
+                            .with_note("they are \\\" \\\\ \\/ \\b \\f \\n \\r \\t and \\uXXXX"))
+
+                    read_escape(&r.s) match
+                        Err(e) -> return Err(error(where(e), str(e)))
+                        Ok(ch) -> b.push_char(ch)
+                elif c < 32 then
+                    return Err(error(Span(r.s.offset, r.s.offset + 1),
+                        "a control character has to be escaped inside a string"))
+                else
+                    r.s.next_char() match
+                        Some(ch) -> b.push_char(ch)
+                        None -> return Err(error(Span(start, r.s.offset), "unterminated string"))
+
+    Ok(b.finish())
+end json_string
+
+private json_array(r: *Reader) -> Result[Json, Diagnostic]
+    val open = r.s.offset
+    var items: Buf[&Json] = buf()
+
+    r.s.bump()
+    r.s.skip_space()
+
+    if r.s.accept(u8(']')) then return Ok(Arr(items))
+
+    loop
+        json_value(r) match
+            Err(d) -> return Err(d)
+            Ok(v) -> items.push(v)
+
+        r.s.skip_space()
+
+        if r.s.accept(u8(',')) then continue
+        if r.s.accept(u8(']')) then break
+
+        return Err(expected(r.s.here(), "`,` or `]`", found_at(r.src, r.s.here()))
+            .with_note(s"the array opened at ${r.src.locate(open)}"))
+
+    Ok(Arr(items))
+end json_array
+
+private json_object(r: *Reader) -> Result[Json, Diagnostic]
+    val open = r.s.offset
+    var keys: Buf[string] = buf()
+    var values: Buf[&Json] = buf()
+
+    r.s.bump()
+    r.s.skip_space()
+
+    if r.s.accept(u8('}')) then return Ok(Obj(keys, values))
+
+    loop
+        r.s.skip_space()
+
+        json_string(r) match
+            Err(d) -> return Err(d)
+            Ok(k) -> keys.push(k)
+
+        r.s.skip_space()
+
+        if !r.s.accept(u8(':')) then
+            return Err(expected(r.s.here(), "`:`", found_at(r.src, r.s.here())))
+
+        json_value(r) match
+            Err(d) -> return Err(d)
+            Ok(v) -> values.push(v)
+
+        r.s.skip_space()
+
+        if r.s.accept(u8(',')) then continue
+        if r.s.accept(u8('}')) then break
+
+        return Err(expected(r.s.here(), "`,` or `}`", found_at(r.src, r.s.here()))
+            .with_note(s"the object opened at ${r.src.locate(open)}"))
+
+    Ok(Obj(keys, values))
+end json_object
+
+private read_json(text: string) -> Result[Json, Diagnostic]
+    var r = Reader(source_of("t.json", text), scanner_of(text))
+
+    json_value(&r) match
+        Err(d) -> Err(d)
+        Ok(v) ->
+            r.s.skip_space()
+
+            if !r.s.at_end() then
+                return Err(expected(Span(r.s.offset, r.s.offset + 1), "the end of the input",
+                    found_at(r.src, Span(r.s.offset, r.s.offset + 1))))
+
+            Ok(v)
+end read_json
+
+// The parsed value written back out in one canonical form, so that a test can assert what was read
+// as a string rather than needing an equality over a recursive type.
+private show(v: &Json) -> string
+    *v match
+        Null -> "null"
+        Bool(b) -> if b then "true" else "false"
+        Num(x) -> str(x)
+        Str(t) -> s"\"$t\""
+        Arr(items) ->
+            var out = "["
+
+            for i in 0..<items.len()
+                if i > 0 then out = out + ","
+
+                out = out + show(items.at(i))
+
+            out + "]"
+        Obj(keys, values) ->
+            var out = "{"
+
+            for i in 0..<keys.len()
+                if i > 0 then out = out + ","
+
+                out = out + s"\"${keys.at(i)}\":" + show(values.at(i))
+
+            out + "}"
+end show
+
+// What a text reads as, or the message it was refused with -- both as strings, so that a refusal is
+// asserted the same way an answer is.
+private json(text: string) -> string
+    read_json(text) match
+        Ok(v) -> show(v)
+        Err(d) -> s"error: ${d.message}"
+
+@test
+json_reads_the_shapes()
+    assert_eq(json("null"), "null")
+    assert_eq(json("true"), "true")
+    assert_eq(json("false"), "false")
+    assert_eq(json("  42 "), "42")
+    assert_eq(json("-1.5e2"), "-150")
+    assert_eq(json("\"hi\""), "\"hi\"")
+    assert_eq(json("[]"), "[]")
+    assert_eq(json("{}"), "{}")
+end json_reads_the_shapes
+
+@test
+json_nests()
+    assert_eq(json("[1,[2,[3]]]"), "[1,[2,[3]]]")
+    assert_eq(json("{\"a\":{\"b\":[1,2]}}"), "{\"a\":{\"b\":[1,2]}}")
+    assert_eq(json(" [ 1 , 2 ] "), "[1,2]")
+end json_nests
+
+@test
+json_decodes_escapes_and_refuses_the_ones_it_does_not_have()
+    assert_eq(json("\"a\\nb\""), "\"a\nb\"")
+    assert_eq(json("\"\\u0041\""), "\"A\"")
+    assert_eq(json("\"\\ud83d\\ude00\""), "\"😀\"")
+    assert_eq(json("\"\\x41\""), "error: not one of JSON's escapes")
+    assert_eq(json("\"a"), "error: unterminated string")
+end json_decodes_escapes_and_refuses_the_ones_it_does_not_have
+
+// The narrowing that is the grammar's rather than the reader's.
+@test
+json_numbers_are_narrower_than_the_readers()
+    assert_eq(json("01"), "error: a number may not have a leading zero")
+    assert_eq(json("1_0"), "error: a number may not have underscores in it")
+    assert_eq(json("0x10"), "error: a number may not have a radix prefix")
+    assert_eq(json("0"), "0")
+    assert_eq(json("0.5"), "0.5")
+end json_numbers_are_narrower_than_the_readers
+
+@test
+json_says_what_it_expected()
+    assert_eq(json("[1 2]"), "error: expected `,` or `]`")
+    assert_eq(json("{\"a\" 1}"), "error: expected `:`")
+    assert_eq(json("truely"), "error: expected `true`")
+    assert_eq(json("[1],"), "error: expected the end of the input")
+    assert_eq(json(""), "error: expected a value")
+    assert_eq(json("@"), "error: expected a value")
+end json_says_what_it_expected
+
+// The reason the package carries spans at all: the message points at the place, quotes the line, and
+// says what was there.
+@test
+a_json_error_renders_against_its_input()
+    val text = "{\n  \"a\": 1,\n  \"b\": @\n}\n"
+    val src = source_of("t.json", text)
+
+    read_json(text) match
+        Ok(_) -> assert(false, "@ is not a value")
+        Err(d) ->
+            same(d.render(src),
+                "error: expected a value\n" +
+                " --> t.json:3:8\n" +
+                "  |\n" +
+                "3 |   \"b\": @\n" +
+                "  |        ^ found `@`\n",
+                "the message a person reads")
+end a_json_error_renders_against_its_input
+
+@test
+a_json_error_names_where_the_bracket_opened()
+    val text = "[\n  1\n  2\n]\n"
+    val src = source_of("t.json", text)
+
+    read_json(text) match
+        Ok(_) -> assert(false, "a comma is missing")
+        Err(d) ->
+            same(d.render(src),
+                "error: expected `,` or `]`\n" +
+                " --> t.json:3:3\n" +
+                "  |\n" +
+                "3 |   2\n" +
+                "  |   ^ found `2`\n" +
+                "  |\n" +
+                "  = note: the array opened at 1:1\n",
+                "the message a person reads")
+end a_json_error_names_where_the_bracket_opened

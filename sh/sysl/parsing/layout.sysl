@@ -1,0 +1,201 @@
+module sh.sysl.parsing
+
+import sysl.buf.{Buf, buf}
+
+// Indentation as structure.
+//
+// A language where a block is an indented run -- Python, Haskell, YAML, sysl itself -- has a pass
+// between the lexer and the parser that turns columns into brackets: a line indented further than
+// the one before it opens a block, a line indented less closes one or several, and a line at the
+// same depth ends the statement before it. The parser above then sees `INDENT`, `DEDENT` and
+// `NEWLINE` and never looks at a column again.
+//
+// **What is here is the bookkeeping, not the tokens.** The stack of open columns, the bracket depth
+// that makes a newline insignificant, and the arithmetic of closing several levels at once are the
+// same in every such language and are what this holds. What a `NEWLINE` is *called*, and whether a
+// blank line or a comment-only line counts as a line at all, are the grammar's, so the grammar calls
+// `line` when it has one and emits its own tokens from the answer.
+//
+// **The rule that a newline inside brackets does not count is not optional.** Without it
+// `f(a,\n  b)` is a syntax error in every language that has both features, and every one of them
+// implements it exactly this way: count the brackets in the lexer, and ignore line structure while
+// the count is above zero.
+
+// What a line's indentation did, relative to the line before it.
+enum Dent
+    // Nothing opened or closed: the previous statement ended and another begins.
+    Same
+    // One block opened. Only ever one -- two levels cannot be opened by one line, because there is
+    // nothing between them for a block to contain.
+    Deeper
+    // This many blocks closed.
+    Shallower(levels: usize)
+    // A line that lines up with nothing: it is less indented than the line before it and does not
+    // match any level still open.
+    //
+    // **It is a case of its own because it is the one indentation mistake a person actually makes**
+    // -- a body pulled back to a column between two open ones, usually after moving code -- and a
+    // pass that quietly closed the nearest level would turn it into a parse error somewhere else
+    // entirely.
+    Ragged
+end Dent
+
+// A variant carrying a payload takes its equality out of the compiler's hands, so it is written --
+// and it is written because a grammar's own tests compare against `Shallower(2)`, which is the whole
+// of what a layout pass has to get right.
+impl Eq for Dent
+    eq(self, rhs: Dent) -> bool
+        self match
+            Same ->
+                rhs match
+                    Same -> true
+                    _ -> false
+            Deeper ->
+                rhs match
+                    Deeper -> true
+                    _ -> false
+            Shallower(a) ->
+                rhs match
+                    Shallower(b) -> a == b
+                    _ -> false
+            Ragged ->
+                rhs match
+                    Ragged -> true
+                    _ -> false
+    end eq
+
+impl Display for Dent
+    display(self, out: *Writer, fmt: FormatSpec)
+        val text = self match
+            Same -> "the same"
+            Deeper -> "deeper"
+            Shallower(_) -> "shallower"
+            Ragged -> "ragged"
+
+        display_str(text, out, fmt)
+    end display
+
+// The columns a line's leading whitespace comes to, and what it was made of.
+//
+// **The two counts are there so that a grammar can refuse mixed indentation**, which is the rule
+// most languages that got a second chance at this settled on: a file indented with tabs and one
+// indented with spaces are both fine, and a file using both is a file whose blocks depend on a
+// setting in somebody's editor. Nothing here refuses it -- the counts are handed over and the
+// grammar decides.
+struct Indent
+    columns: usize
+    tabs: usize
+    spaces: usize
+
+    is_mixed(self) -> bool = self.tabs > 0 && self.spaces > 0
+
+// The leading whitespace of the line the cursor is on, consumed.
+//
+// A tab advances to the next multiple of `tab_width`, which is what a terminal does and therefore
+// what the person looking at the file sees. Eight is the usual width to pass; a language that
+// treats a tab as one column passes 1.
+measure_indent(s: *Scanner, tab_width: usize) -> Indent
+    var columns: usize = 0
+    var tabs: usize = 0
+    var spaces: usize = 0
+    val w: usize = if tab_width == 0 then 1 else tab_width
+
+    loop
+        s.peek() match
+            Some(c) ->
+                if c == 32 then
+                    columns += 1
+                    spaces += 1
+                    s.bump()
+                elif c == 9 then
+                    columns = (columns / w + 1) * w
+                    tabs += 1
+                    s.bump()
+                else
+                    break
+            None -> break
+
+    Indent(columns, tabs, spaces)
+end measure_indent
+
+// The open blocks and the open brackets.
+struct Layout
+    // The column each open block begins at. It always holds at least one entry, the outermost level
+    // at column 0, so a line at the left margin closes everything and matches.
+    columns: Buf[usize]
+
+    // How many brackets are open. While it is above zero, line structure means nothing.
+    brackets: usize
+
+    // How many blocks are open, not counting the outermost.
+    depth(self) -> usize = self.columns.len() - 1
+
+    // Whether a newline means anything where the cursor is.
+    //
+    // A lexer asks this at every newline it meets: outside brackets the answer is yes and the line
+    // is handed to `line` below; inside them the newline is whitespace and is dropped.
+    significant(self) -> bool = self.brackets == 0
+
+    // One more bracket open -- called by the lexer as it emits a `(`, `[` or `{`.
+    open_bracket(*self)
+        self.brackets += 1
+
+    // One fewer. A close with none open is ignored rather than counted below zero: the mismatch is
+    // the parser's error to report, and a lexer that had gone negative would then treat every
+    // newline for the rest of the file as insignificant.
+    close_bracket(*self)
+        if self.brackets > 0 then self.brackets -= 1
+
+    // What a line at this column does.
+    //
+    // Call it once per line that has something on it, with the column its first non-blank character
+    // is at. **A blank line, and a line holding only a comment, must not be handed to it** -- in
+    // every language of this kind such a line has no indentation of its own and closing a block on
+    // one would be a surprise. The lexer knows what a comment is and this does not, which is why the
+    // decision is left there.
+    line(*self, column: usize) -> Dent
+        val top = self.columns.at(self.columns.len() - 1)
+
+        if column > top then
+            self.columns.push(column)
+            return Deeper
+
+        if column == top then return Same
+
+        var closed: usize = 0
+
+        while self.columns.len() > 1 && column < self.columns.at(self.columns.len() - 1)
+            self.columns.pop()
+            closed += 1
+
+        // **The levels below it have already been popped when this answers `Ragged`**, which is a
+        // deliberate choice about recovery: the line is at *some* column and the levels it is inside
+        // are gone, so the layout carries on from the nearest level below it and the grammar reports
+        // one error. Leaving the stack as it was would have made every following line ragged too.
+        if column != self.columns.at(self.columns.len() - 1) then return Ragged
+
+        Shallower(closed)
+    end line
+
+    // How many blocks the end of the input closes.
+    //
+    // Every open block is closed at the end of a file, which is what lets the last statement in a
+    // nested body be the last line of the file with nothing after it. It leaves the layout at the
+    // outermost level, so calling it twice answers zero the second time.
+    finish(*self) -> usize
+        val n = self.columns.len() - 1
+
+        while self.columns.len() > 1
+            self.columns.pop()
+
+        n
+    end finish
+end Layout
+
+// A layout at the outermost level with nothing open.
+layout() -> Layout
+    var columns: Buf[usize] = buf()
+
+    columns.push(0)
+    Layout(columns, 0)
+end layout

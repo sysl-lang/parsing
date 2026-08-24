@@ -544,7 +544,9 @@ end brackets_are_counted_past
 
 // Compare, and say what the difference was. A rendering's whole contract is its exact text, so a
 // failure that only said `false` would leave the reader diffing by eye.
-private same(got: string, want: string, what: string, file: string = __FILE__, line: long = __LINE__)
+// It is not `private` because the JSON reader in the file beside this one asserts the same way, and
+// `private` in sysl is private to the *file*.
+same(got: string, want: string, what: string, file: string = __FILE__, line: long = __LINE__)
     if got != want
         print("\n")
         print(what)
@@ -556,11 +558,11 @@ private same(got: string, want: string, what: string, file: string = __FILE__, l
     assert(got == want, what, file, line)
 end same
 
-private val json: string = "{\n  \"a\": 1,\n  \"b\": ,\n}\n"
+private val json_doc: string = "{\n  \"a\": 1,\n  \"b\": ,\n}\n"
 
 @test
 a_diagnostic_renders_the_way_the_compiler_does()
-    val src = source_of("config.json", json)
+    val src = source_of("config.json", json_doc)
     val d = expected(Span(19, 20), "a value", found_at(src, Span(19, 20)))
         .with_note("a value is a number, a string, `true`, `false`, `null`, an array or an object")
 
@@ -922,3 +924,131 @@ a_predicate_takes_a_token_only_when_it_matches()
     assert(ts.accept_if(is_plus).is_some(), "the plus")
     assert_eq(ts.position, 1)
 end a_predicate_takes_a_token_only_when_it_matches
+
+// -- layout -----------------------------------------------------------------------------------
+
+// A whole indentation pass in twenty lines, which is what the module is for: `I` where a block
+// opened, `D` per block closed, `N` at the end of a logical line, `R` where a line lined up with
+// nothing. Brackets suppress the line structure inside them.
+private dents(text: string) -> string
+    var s = scanner_of(text)
+    var l = layout()
+    var out = ""
+
+    while !s.at_end()
+        val indent = measure_indent(&s, 8)
+
+        // A blank line has no indentation of its own, so it is not a line as far as layout is
+        // concerned.
+        if s.at_line_end() then
+            s.accept_newline()
+            continue
+
+        if l.significant() then
+            val step = l.line(indent.columns) match
+                Same -> ""
+                Deeper -> "I"
+                Shallower(n) ->
+                    var closed = ""
+
+                    for _ in 0..<n
+                        closed = closed + "D"
+
+                    closed
+                Ragged -> "R"
+
+            out = out + step
+
+        // The rest of the line, counting the brackets on it, which is all a lexer has to do to make
+        // a newline inside them stop meaning anything.
+        while !s.at_end() && !s.at_line_end()
+            s.next() match
+                Some(c) ->
+                    if c == u8('(') then
+                        l.open_bracket()
+                    elif c == u8(')') then
+                        l.close_bracket()
+                None -> ()
+
+        val ended = s.accept_newline()
+
+        if ended && l.significant() then out = out + "N"
+
+    for _ in 0..<l.finish()
+        out = out + "D"
+
+    out
+end dents
+
+@test
+a_block_opens_on_a_deeper_line_and_closes_on_a_shallower_one()
+    assert_eq(dents("a\n  b\nc\n"), "NINDN")
+    assert_eq(dents("a\n  b\n    c\nd\n"), "NININDDN")
+end a_block_opens_on_a_deeper_line_and_closes_on_a_shallower_one
+
+@test
+everything_still_open_closes_at_the_end_of_the_input()
+    assert_eq(dents("a\n  b\n    c\n"), "NININDD")
+end everything_still_open_closes_at_the_end_of_the_input
+
+@test
+blank_lines_are_not_lines()
+    assert_eq(dents("a\n\n\n  b\n"), "NIND")
+    assert_eq(dents("a\n   \nb\n"), "NN")
+end blank_lines_are_not_lines
+
+// The one indentation mistake people actually make: a line pulled back to a column between two open
+// levels. A pass that quietly closed the nearest one would turn it into a parse error elsewhere.
+@test
+a_line_that_lines_up_with_nothing_is_named()
+    assert_eq(dents("a\n    b\n  c\n"), "NINRN")
+end a_line_that_lines_up_with_nothing_is_named
+
+// Without this rule `f(a,\n  b)` is a syntax error in every language that has both features.
+@test
+a_newline_inside_brackets_means_nothing()
+    assert_eq(dents("f(a,\n  b)\nc\n"), "NN")
+    assert_eq(dents("f(\n  a\n)\n  b\n"), "NIND")
+end a_newline_inside_brackets_means_nothing
+
+@test
+a_close_with_nothing_open_does_not_go_negative()
+    var l = layout()
+
+    l.close_bracket()
+    assert(l.significant(), "still significant")
+    l.open_bracket()
+    assert(!l.significant(), "not while one is open")
+end a_close_with_nothing_open_does_not_go_negative
+
+@test
+tabs_advance_to_the_next_stop()
+    var s = scanner_of("\t x")
+    val i = measure_indent(&s, 8)
+
+    assert_eq(i.columns, 9)
+    assert_eq(i.tabs, 1)
+    assert_eq(i.spaces, 1)
+    assert(i.is_mixed(), "both kinds")
+    assert_eq(s.peek(), Some(u8('x')))
+
+    var t = scanner_of("  \tx")
+
+    assert_eq(measure_indent(&t, 8).columns, 8)
+
+    var u = scanner_of("\tx")
+
+    assert_eq(measure_indent(&u, 1).columns, 1)
+end tabs_advance_to_the_next_stop
+
+@test
+the_depth_is_what_is_open()
+    var l = layout()
+
+    assert_eq(l.depth(), 0)
+    assert_eq(l.line(4), Deeper)
+    assert_eq(l.depth(), 1)
+    assert_eq(l.line(4), Same)
+    assert_eq(l.line(0), Shallower(1))
+    assert_eq(l.finish(), 0)
+end the_depth_is_what_is_open
