@@ -20,24 +20,38 @@ import sysl.text.{Ascii, char_from_u32, from_utf8, parse_real, str_builder}
 
 // Why a literal was refused.
 //
-// The positions are byte offsets rather than spans where a single place is what a reader would
-// point at -- the digit that is not one, the escape that is not one -- and spans where the thing
-// that went wrong has an extent, like a string that never closed.
+// **Every one of them carries a `Span` and not an offset**, which is the whole difference between a
+// caret under one character and a caret under the thing that was wrong. `\q` is two bytes and gets
+// two; `\ud83d` with no low surrogate after it is six and gets six; `0x` with no digits is two. An
+// offset would have been enough to *say where* and is not enough to draw, and a reader who is being
+// shown their own text is looking at the underline rather than at the line and column.
+//
+// It is the same shape the sysl compiler's own `Pos` has -- a start **and** an end -- for the same
+// reason.
+//
+// A span may still be **empty**, and that is a different statement rather than a missing end: it
+// says something is *absent* at that point rather than wrong across an extent, and `diag` draws one
+// caret for it because a message pointing at zero characters points at nothing.
 enum LitError
-    // A prefix with no digits after it: `0x`, or `1e` with no exponent.
-    NoDigits(at: usize)
+    // A prefix with no digits after it -- the span is the prefix, `0x`, or the empty place the
+    // digits should have started.
+    NoDigits(span: Span)
     // A digit outside the base, or an underscore where a digit was needed.
-    BadDigit(at: usize)
-    // The value does not fit 64 bits.
+    BadDigit(span: Span)
+    // The value does not fit 64 bits. The span is the whole number, since that is what has to be
+    // changed.
     Overflow(span: Span)
-    // A quote, or an escape, that the end of the input arrived in the middle of.
+    // A quote, or an escape, that the end of the input arrived in the middle of. The span runs from
+    // where the thing opened to where the input ran out, which is what says what was left unclosed.
     Unterminated(span: Span)
     // The cursor was not on the opening quote the reader was told to expect.
-    NoQuote(at: usize)
-    // A backslash followed by something that is not an escape.
-    BadEscape(at: usize)
-    // An escape naming a value that is not a character: past U+10FFFF, or a lone surrogate.
-    BadCodepoint(at: usize)
+    NoQuote(span: Span)
+    // A backslash followed by something that is not an escape. The span is the whole escape as far
+    // as it was read.
+    BadEscape(span: Span)
+    // An escape naming a value that is not a character: past U+10FFFF, or a lone surrogate. The span
+    // is the whole escape, so a reader sees the digits that named it.
+    BadCodepoint(span: Span)
     // A float whose shape scanned and whose value would not convert, which is the machine's limit
     // rather than the input's mistake.
     BadReal(span: Span)
@@ -61,13 +75,13 @@ impl Display for LitError
 // Where a refusal happened, for a caller assembling a diagnostic out of one.
 where(e: LitError) -> Span
     e match
-        NoDigits(at) -> point(at)
-        BadDigit(at) -> point(at)
+        NoDigits(s) -> s
+        BadDigit(s) -> s
         Overflow(s) -> s
         Unterminated(s) -> s
-        NoQuote(at) -> point(at)
-        BadEscape(at) -> point(at)
-        BadCodepoint(at) -> point(at)
+        NoQuote(s) -> s
+        BadEscape(s) -> s
+        BadCodepoint(s) -> s
         BadReal(s) -> s
 end where
 
@@ -101,6 +115,11 @@ impl Display for Number
             Real(x) -> display_str(str(x), out, fmt)
     end display
 
+// One byte, as a span: the smallest thing there is to underline, and what a mistake about a single
+// character reports. It is a function rather than `Span(at, at + 1)` written out at seven call sites,
+// since the two numbers being adjacent is the whole of what it says.
+private one_at(at: usize) -> Span = Span(at, at + 1)
+
 // The largest value the accumulation may hold. Written as a `val` with the type on it because
 // `18446744073709551615` is not an `int` and cannot be one.
 private val ulong_max: ulong = 18446744073709551615
@@ -125,7 +144,7 @@ read_digits(s: *Scanner, base: int) -> Result[ulong, LitError]
         s.peek() match
             Some(c) ->
                 if c == u8('_') then
-                    if digits == 0 then return Err(BadDigit(s.offset))
+                    if digits == 0 then return Err(BadDigit(one_at(s.offset)))
 
                     s.bump()
 
@@ -134,8 +153,10 @@ read_digits(s: *Scanner, base: int) -> Result[ulong, LitError]
                     // ending would have looked like a legal number.
                     s.peek() match
                         Some(d) ->
-                            if d.digit_value(base).is_none() then return Err(BadDigit(s.offset))
-                        None -> return Err(BadDigit(s.offset))
+                            if d.digit_value(base).is_none() then return Err(BadDigit(one_at(s.offset)))
+                        // The input ended after the separator, so there is no byte to underline and
+                        // the span is the empty place a digit should have been.
+                        None -> return Err(BadDigit(point(s.offset)))
                 else
                     c.digit_value(base) match
                         Some(d) ->
@@ -155,7 +176,7 @@ read_digits(s: *Scanner, base: int) -> Result[ulong, LitError]
                         None -> break
             None -> break
 
-    if digits == 0 then Err(NoDigits(start)) else Ok(v)
+    if digits == 0 then Err(NoDigits(point(start))) else Ok(v)
 end read_digits
 
 // An integer, with the radix prefix if it has one.
@@ -178,8 +199,15 @@ read_integer(s: *Scanner) -> Result[ulong, LitError]
                         0
 
                 if base != 0 then
+                    val from = s.offset
+
                     s.skip(2)
-                    return read_digits(s, base)
+
+                    // `0x` with nothing after it is a two-byte mistake, and the digits that are
+                    // missing have no span of their own -- so the prefix is what gets underlined.
+                    return read_digits(s, base) match
+                        Err(NoDigits(_)) -> Err(NoDigits(Span(from, from + 2)))
+                        other -> other
             None -> ()
 
     read_digits(s, 10)
@@ -285,7 +313,7 @@ end to_real
 read_escape(s: *Scanner) -> Result[char, LitError]
     val start = s.offset
 
-    if !s.accept(u8('\\')) then return Err(BadEscape(start))
+    if !s.accept(u8('\\')) then return Err(BadEscape(one_at(start)))
 
     s.next() match
         None -> Err(Unterminated(s.span_from(start)))
@@ -312,12 +340,14 @@ read_escape(s: *Scanner) -> Result[char, LitError]
                 Ok(char(u32(c)))
             elif c == u8('x') then
                 read_hex(s, 2, start) match
-                    Ok(v) -> to_char(v, start)
+                    Ok(v) -> to_char(s, v, start)
                     Err(e) -> Err(e)
             elif c == u8('u') then
                 read_u_escape(s, start)
             else
-                Err(BadEscape(start))
+                // The offending byte has been consumed, so the span covers the backslash and it
+                // together -- `\q` underlined, rather than a caret under the backslash alone.
+                Err(BadEscape(s.span_from(start)))
 end read_escape
 
 // The `\u` half, which is two different escapes wearing one letter.
@@ -333,16 +363,16 @@ private read_u_escape(s: *Scanner, start: usize) -> Result[char, LitError]
                         Some(d) ->
                             n += 1
 
-                            if n > 6 then return Err(BadCodepoint(start))
+                            if n > 6 then return Err(BadCodepoint(s.span_from(start)))
 
                             v = v * 16 + u32(d)
-                        None -> return Err(BadCodepoint(start))
+                        None -> return Err(BadCodepoint(s.span_from(start)))
                 None -> ()
 
         if !s.accept(u8('}')) then return Err(Unterminated(s.span_from(start)))
-        if n == 0 then return Err(NoDigits(start))
+        if n == 0 then return Err(NoDigits(s.span_from(start)))
 
-        return to_char(v, start)
+        return to_char(s, v, start)
 
     read_hex(s, 4, start) match
         Err(e) -> Err(e)
@@ -351,16 +381,16 @@ private read_u_escape(s: *Scanner, start: usize) -> Result[char, LitError]
             // alone is refused rather than turned into U+FFFD: this reads a literal, and a literal
             // that says half a character is a mistake in the text rather than damage to it.
             if hi >= 0xD800u32 && hi <= 0xDBFFu32 then
-                if !s.accept_seq("\\u".bytes) then return Err(BadCodepoint(start))
+                if !s.accept_seq("\\u".bytes) then return Err(BadCodepoint(s.span_from(start)))
 
                 read_hex(s, 4, start) match
                     Err(e) -> Err(e)
                     Ok(lo) ->
-                        if lo < 0xDC00u32 || lo > 0xDFFFu32 then return Err(BadCodepoint(start))
+                        if lo < 0xDC00u32 || lo > 0xDFFFu32 then return Err(BadCodepoint(s.span_from(start)))
 
-                        to_char(0x10000u32 + ((hi - 0xD800u32) << 10) + (lo - 0xDC00u32), start)
+                        to_char(s, 0x10000u32 + ((hi - 0xD800u32) << 10) + (lo - 0xDC00u32), start)
             else
-                to_char(hi, start)
+                to_char(s, hi, start)
 end read_u_escape
 
 // Exactly `n` hexadecimal digits, which is what the fixed-width escapes take -- a short run is the
@@ -374,15 +404,15 @@ private read_hex(s: *Scanner, n: int, start: usize) -> Result[u32, LitError]
             Some(c) ->
                 c.digit_value(16) match
                     Some(d) -> v = v * 16 + u32(d)
-                    None -> return Err(BadDigit(s.offset - 1))
+                    None -> return Err(BadDigit(one_at(s.offset - 1)))
 
     Ok(v)
 end read_hex
 
-private to_char(v: u32, start: usize) -> Result[char, LitError]
+private to_char(s: *Scanner, v: u32, start: usize) -> Result[char, LitError]
     char_from_u32(v) match
         Some(c) -> Ok(c)
-        None -> Err(BadCodepoint(start))
+        None -> Err(BadCodepoint(s.span_from(start)))
 
 // A quoted literal, with the cursor on the opening quote, handed back with its escapes decoded.
 //
@@ -396,7 +426,7 @@ private to_char(v: u32, start: usize) -> Result[char, LitError]
 read_quoted(s: *Scanner, quote: u8) -> Result[string, LitError]
     val start = s.offset
 
-    if !s.accept(quote) then return Err(NoQuote(start))
+    if !s.accept(quote) then return Err(NoQuote(one_at(start)))
 
     var b = str_builder()
 
@@ -427,12 +457,13 @@ end read_quoted
 read_char_literal(s: *Scanner, quote: u8) -> Result[char, LitError]
     val start = s.offset
 
-    if !s.accept(quote) then return Err(NoQuote(start))
+    if !s.accept(quote) then return Err(NoQuote(one_at(start)))
 
     val c = s.peek() match
         None -> return Err(Unterminated(s.span_from(start)))
         Some(b) ->
-            if b == quote then return Err(NoDigits(s.offset))
+            // `''` is a literal holding nothing, and the whole of it is what to underline.
+            if b == quote then return Err(NoDigits(Span(start, s.offset + 1)))
 
             if b == u8('\\') then
                 read_escape(s) match

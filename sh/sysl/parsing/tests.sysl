@@ -330,14 +330,52 @@ a_quote_that_never_closes_is_refused()
     assert(quoted("abc").is_err(), "no opening quote")
 end a_quote_that_never_closes_is_refused
 
+// **Every refusal carries an extent, not a place**, which is the difference between a caret under
+// one character and a caret under the thing that was wrong. The compiler's own `Pos` carries a start
+// and an end for the same reason, and these are the spans a reader actually sees underlined.
 @test
-a_bad_escape_names_the_backslash()
+a_refusal_underlines_what_was_wrong()
     var s = scanner_of("\"a\\qb\"")
 
     read_quoted(&s, u8('"')) match
         Ok(_) -> assert(false, "q is not an escape")
-        Err(e) -> assert_eq(where(e), Span(2, 2))
-end a_bad_escape_names_the_backslash
+        // The whole escape, `\q`, and not the backslash alone.
+        Err(e) -> assert_eq(where(e), Span(2, 4))
+
+    var t = scanner_of("0x")
+
+    read_integer(&t) match
+        Ok(_) -> assert(false, "no digits")
+        // The prefix, since the digits that are missing have no span of their own.
+        Err(e) -> assert_eq(where(e), Span(0, 2))
+
+    var u = scanner_of("1__0")
+
+    read_integer(&u) match
+        Ok(_) -> assert(false, "a doubled underscore")
+        Err(e) -> assert_eq(where(e), Span(2, 3))
+
+    var v = scanner_of("\"\\ud83dx\"")
+
+    read_quoted(&v, u8('"')) match
+        Ok(_) -> assert(false, "a lone high surrogate")
+        // All six bytes of the escape, so the reader sees the digits that named it.
+        Err(e) -> assert_eq(where(e), Span(1, 7))
+
+    var w = scanner_of("''")
+
+    read_char_literal(&w, u8('\'')) match
+        Ok(_) -> assert(false, "nothing between the quotes")
+        // Both quotes: what is wrong is the pair, and there is nothing between them to point at.
+        Err(e) -> assert_eq(where(e), Span(0, 2))
+
+    var x = scanner_of("99999999999999999999999")
+
+    read_integer(&x) match
+        Ok(_) -> assert(false, "too large")
+        // The whole number, since that is what has to change.
+        Err(e) -> assert_eq(where(e), Span(0, 23))
+end a_refusal_underlines_what_was_wrong
 
 @test
 text_outside_the_escapes_is_copied_whole()
