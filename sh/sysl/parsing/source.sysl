@@ -1,0 +1,178 @@
+module sh.sysl.parsing
+
+import sysl.buf.{Buf, buf}
+import sysl.slices.binary_search
+import sysl.text.chars_of
+
+// Where a piece of input is, and how to say it in the terms a person reads.
+//
+// **A parser carries offsets and a report carries lines.** Those are two different numbers and the
+// conversion between them is the only interesting thing in this file: a byte offset is what a
+// scanner has, is cheap to store on every node of a tree, and means nothing to the person who wrote
+// the input; a line and a column is what an error message says, and computing one costs a walk of
+// the text before it.
+//
+// So a `Span` is a pair of offsets and nothing else, and `Source` is what turns one into a `Loc`.
+// Every tree node in a grammar can hold a span for the price of two integers, and only the handful
+// of them that end up in a message ever pay for the lookup.
+//
+// **The line-start table is built eagerly, in one pass, and that is not an optimisation.** The
+// alternative -- counting newlines from the start of the input each time a position is reported, or
+// worse, scanning backwards from the offset -- is linear per lookup, and a file of errors then costs
+// the square of its length. That bill has been paid once already in this organisation: the sysl
+// compiler's own native lexer was quadratic for exactly this reason, because line starts were cached
+// on one platform and recomputed on the other. Nothing here may scan backwards to count a newline.
+
+// A half-open range of byte offsets into one input.
+//
+// Half-open because that is the range the language slices with (`src[s.start..<s.end]`), because an
+// empty span is then `start == end` rather than a pair that has to be read as inverted, and because
+// two adjacent spans meet at one number instead of straddling it.
+struct Span
+    start: usize
+    end: usize
+
+    len(self) -> usize = self.end - self.start
+
+    is_empty(self) -> bool = self.end <= self.start
+
+    contains(self, offset: usize) -> bool = offset >= self.start && offset < self.end
+
+    // The smallest span covering both, which is how a node's span is assembled out of its children's
+    // -- an expression spans from its leftmost token to its rightmost, and neither child knows that.
+    to(self, rhs: Span) -> Span =
+        Span(if self.start < rhs.start then self.start else rhs.start,
+             if self.end > rhs.end then self.end else rhs.end)
+
+impl Eq for Span
+    eq(self, rhs: Span) -> bool = self.start == rhs.start && self.end == rhs.end
+
+impl Display for Span
+    display(self, out: *Writer, fmt: FormatSpec) = display_str(s"${self.start}..<${self.end}", out, fmt)
+
+// A span of no width at one offset, which is what a diagnostic about something *missing* points at:
+// the place a token should have been and was not.
+point(offset: usize) -> Span = Span(offset, offset)
+
+// A position as a person counts it: both numbers from one, because that is what every editor,
+// compiler and language server on the machine agrees on.
+//
+// **The column is in characters, not bytes and not display columns.** Bytes would put the column of
+// a line's third character at 5 when the first two were accented, which is a number nobody can find
+// in an editor. Display columns are the right answer for drawing a caret and the wrong one for
+// naming a position, since a tab and a wide glyph then make two different lines disagree about where
+// their fourth character is. `diag` draws its caret from the text itself for that reason, and this
+// number is the one that goes in `file:line:col`.
+struct Loc
+    line: usize
+    col: usize
+
+impl Eq for Loc
+    eq(self, rhs: Loc) -> bool = self.line == rhs.line && self.col == rhs.col
+
+impl Display for Loc
+    display(self, out: *Writer, fmt: FormatSpec) = display_str(s"${self.line}:${self.col}", out, fmt)
+
+// One input, with the table that makes positions cheap.
+//
+// The name is carried because a diagnostic says where the file was, and because a program reading
+// several inputs has no other way to tell two spans apart -- offsets are per-input and a span does
+// not name the thing it indexes. Anything a caller likes goes in it: a path, `<stdin>`, the name of
+// a REPL line.
+//
+// The bytes are borrowed rather than owned. A `Source` is made over text the program already has,
+// and the whole point of a span is that it indexes that text rather than copying out of it.
+struct Source
+    name: string
+    bytes: []const u8
+
+    // The byte offset each line begins at, in order, starting with 0. There is always at least one
+    // entry, so an empty input has one empty line -- which is what a person would say about an empty
+    // file, and it keeps every lookup below out of the business of having no lines at all.
+    starts: Buf[usize]
+
+    // How many lines the input has.
+    //
+    // **Text ending in a newline has an empty last line**, so `"ab\n"` is two rather than one. That
+    // is the answer a diagnostic needs and it is what clang and rustc both report: an error at the
+    // end of such an input is at line 2, column 1, and a count that stopped at 1 would have no
+    // position to give it. It is also the reason the table is a table of *starts* -- the byte after
+    // the last newline is a line's start whether or not anything was written on it.
+    line_count(self) -> usize = self.starts.len()
+
+    // The text a span covers.
+    text(self, s: Span) -> []const u8 = self.bytes[s.start..<s.end]
+
+    // The whole input as one span, which is what a report about the file rather than about a place
+    // in it points at.
+    all(self) -> Span = Span(0, self.bytes.len)
+
+    // Which line and column an offset falls on.
+    //
+    // **The line is a binary search and the column is a walk**, and the split is deliberate: the
+    // search is over the table and costs the logarithm of the line count, while the column has to
+    // count characters from the line's start and there is nothing to precompute that would not be a
+    // table per line. Lines are short and messages are few, so the walk is the cheap half in
+    // practice; what matters is that neither half is linear in the *file*.
+    //
+    // An offset past the end answers with the position one past the last character, which is where a
+    // report about a truncated input wants to point.
+    locate(self, offset: usize) -> Loc
+        val at = if offset > self.bytes.len then self.bytes.len else offset
+        val (found, i) = binary_search(self.starts.view(), at)
+
+        // `binary_search` answers the first position not below `at`, so a hit is the line's own
+        // start and a miss is one line further on than the one the offset is inside. The table's
+        // first entry is 0 and `at` is not negative, so the subtraction cannot go below zero.
+        val line = if found then i else i - 1
+        val start = self.starts.at(line)
+
+        Loc(line + 1, chars_of(self.bytes[start..<at]).count() + 1)
+    end locate
+
+    // The span of one line, counted from one, without its terminator.
+    //
+    // A line past the end is an empty span at the end of the input rather than a panic, because the
+    // caller asking is usually a renderer working from a `Loc` it did not compute itself.
+    line_span(self, line: usize) -> Span
+        if line == 0 || line > self.starts.len() then return point(self.bytes.len)
+
+        val start = self.starts.at(line - 1)
+        var end = if line == self.starts.len() then self.bytes.len else self.starts.at(line) - 1
+
+        // The table steps past a `\n`, so the byte before the next line's start is that newline and
+        // is already excluded. What is left to trim is the `\r` of a `\r\n` pair.
+        if end > start && self.bytes[end - 1] == 13 then end -= 1
+
+        Span(start, end)
+    end line_span
+
+    // The text of one line, which is what a caret line is drawn under.
+    line_text(self, line: usize) -> []const u8 = self.text(self.line_span(line))
+end Source
+
+// An input with its line-start table built.
+//
+// One pass over the bytes, looking for `\n` and nothing else. A `\r\n` pair ends its line at the
+// `\n` like every other, and the `\r` is trimmed where a line is asked for rather than recorded
+// here -- a bare `\r` in the middle of a line is then just a byte, which is what a program that has
+// to read Windows text and Unix text through the same parser wants.
+//
+// A newline at the very end pushes a start one past the last byte, which is what makes the empty
+// final line `line_count` describes.
+source(name: string, bytes: []const u8) -> Source
+    var starts: Buf[usize] = buf()
+
+    starts.push(0)
+
+    for i in 0..<bytes.len
+        if bytes[i] == 10 then starts.push(i + 1)
+
+    Source(name, bytes, starts)
+end source
+
+// The same, over text that is already a `string`.
+//
+// It exists because `string` does not coerce to `[]const u8` -- `.bytes` is the spelling, and having
+// to know that at the first line of every program using this package is a bad first impression.
+source_of(name: string, text: string) -> Source = source(name, text.bytes)

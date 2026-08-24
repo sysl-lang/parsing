@@ -1,0 +1,245 @@
+module sh.sysl.parsing
+
+import sysl.text.chars_of
+
+// The cursor every grammar starts with.
+//
+// A `Scanner` is a slice and an offset, and it allocates nothing -- so it is the part of this
+// package that runs anywhere, including a target with no heap that could not build a `Source`.
+//
+// **It is deliberately not an iterator.** `Iterate` gives one direction and one element at a time,
+// and a lexer needs to look ahead without consuming, to record where a token started before knowing
+// what it is, and to put a position back after trying an alternative that did not work out. Those
+// are three different things a `for` loop cannot do, and each of them is one member here.
+//
+// **The byte members are the ones a grammar mostly uses, and that is not an oversight.** Every
+// structural character of every text format on the machine -- brackets, quotes, commas, operators,
+// newlines -- is ASCII, and every one of them is a byte whose value cannot appear inside a UTF-8
+// character. So a scanner works in bytes and reaches for `next_char` only where the *content* is
+// text: an identifier that may be Greek, a string literal being copied out. That is one decode per
+// character that needed one, rather than one per byte of the file.
+struct Scanner
+    src: []const u8
+    at: usize
+
+    // Where the cursor is, in bytes from the start of the input.
+    offset -> usize = self.at
+
+    // What has not been consumed. Handed out so that a caller can hand a sub-parser its own scanner,
+    // or match a whole word against it without stepping byte by byte.
+    rest(self) -> []const u8 = self.src[self.at..<self.src.len]
+
+    at_end(self) -> bool = self.at >= self.src.len
+
+    // How many bytes are left.
+    remaining(self) -> usize = if self.at >= self.src.len then 0 else self.src.len - self.at
+
+    // -- looking ------------------------------------------------------------------------------
+
+    // The byte at the cursor, without moving.
+    peek(self) -> Option[u8] = self.peek_at(0)
+
+    // The byte `n` further on, which is the lookahead a grammar needs when one character is not
+    // enough to decide -- `/` against `//`, `.` against `..`, `<` against `<=`.
+    peek_at(self, n: usize) -> Option[u8]
+        val i = self.at + n
+
+        if i >= self.src.len then None else Some(self.src[i])
+
+    // Whether what is left begins with these bytes. It looks at the whole run rather than at one
+    // byte, which is what a keyword or a multi-byte operator needs.
+    starts_with(self, want: []const u8) -> bool
+        if want.len > self.remaining() then return false
+
+        for i in 0..<want.len
+            if self.src[self.at + i] != want[i] then return false
+
+        true
+    end starts_with
+
+    // -- moving -------------------------------------------------------------------------------
+
+    // One byte forward. Past the end it does nothing, so a loop that forgot to test `at_end` stops
+    // rather than running away -- the cursor saturates at the end of the input and stays there.
+    bump(*self)
+        if self.at < self.src.len then self.at += 1
+
+    // `n` bytes forward, clamped at the end of the input.
+    skip(*self, n: usize)
+        self.at = if self.src.len - self.at < n then self.src.len else self.at + n
+
+    // The byte at the cursor, consumed.
+    next(*self) -> Option[u8]
+        if self.at >= self.src.len then return None
+
+        val c = self.src[self.at]
+
+        self.at += 1
+        Some(c)
+    end next
+
+    // -- accepting ----------------------------------------------------------------------------
+
+    // The heart of it: consume the byte if it is the one wanted, and say whether it was.
+    //
+    // Written as a test rather than as a demand because that is the shape recursive descent is made
+    // of -- `if s.accept(u8('-')) then …` is a grammar's alternative, and a version that panicked on
+    // a mismatch would need a `peek` in front of every call.
+    accept(*self, c: u8) -> bool
+        if self.at < self.src.len && self.src[self.at] == c then
+            self.at += 1
+            true
+        else
+            false
+    end accept
+
+    // The same for a whole run: a keyword, `-->`, `!=`. Nothing moves unless all of it matched, so a
+    // failed attempt costs the caller no backtracking of its own.
+    accept_seq(*self, want: []const u8) -> bool
+        if !self.starts_with(want) then return false
+
+        self.at += want.len
+        true
+    end accept_seq
+
+    // Any one of a set of bytes -- the digits, the operator characters, the delimiters.
+    accept_any(*self, set: []const u8) -> bool
+        if self.at >= self.src.len then return false
+
+        for i in 0..<set.len
+            if self.src[self.at] == set[i] then
+                self.at += 1
+                return true
+
+        false
+    end accept_any
+
+    // One byte, if it answers a predicate. `s.accept_if(is_digit)` and `s.accept_if((c) -> c > 127)`
+    // are both this, and a member taking a bare arrow is what lets the second one be written inline.
+    accept_if(*self, p: u8 -> bool) -> bool
+        if self.at < self.src.len && p(self.src[self.at]) then
+            self.at += 1
+            true
+        else
+            false
+    end accept_if
+
+    // As many as answer the predicate, and how many that was.
+    //
+    // The count is returned rather than nothing because "did anything match" is a question the
+    // caller usually has -- a run of digits that turned out to be empty is a different token, or an
+    // error, and testing the offset before and after is what the caller would otherwise write.
+    accept_while(*self, p: u8 -> bool) -> usize
+        val start = self.at
+
+        while self.at < self.src.len && p(self.src[self.at])
+            self.at += 1
+
+        self.at - start
+    end accept_while
+
+    // The other direction, for the same reason: skip up to something rather than over something.
+    accept_until(*self, p: u8 -> bool) -> usize
+        val start = self.at
+
+        while self.at < self.src.len && !p(self.src[self.at])
+            self.at += 1
+
+        self.at - start
+    end accept_until
+
+    // **The whole of this package's error-recovery policy**, which is to say it has none: a parser
+    // that has just refused something moves to the next place it knows how to start, and where that
+    // is is the grammar's business and nobody else's. A statement parser resumes at a newline or a
+    // `;`, a JSON reader at a `,` or a `}`, an argument list at a `)`.
+    //
+    // The cursor stops **on** the byte it found rather than past it, so the caller decides whether
+    // the thing it stopped at is a token to read or a delimiter to consume.
+    skip_until(*self, set: []const u8) -> usize
+        val start = self.at
+
+        while self.at < self.src.len && !contains_byte(set, self.src[self.at])
+            self.at += 1
+
+        self.at - start
+    end skip_until
+
+    // -- characters ---------------------------------------------------------------------------
+
+    // The character at the cursor, decoded, without moving.
+    //
+    // The bytes are not validated on the way in -- a `Scanner` is made over whatever the caller has
+    // -- so this decodes what is there. Text that came from a `string` is well-formed by
+    // construction; text that came from a file is the caller's to check, and `sysl.text.from_utf8`
+    // is where that question is asked.
+    peek_char(self) -> Option[char] = chars_of(self.rest()).peek()
+
+    // The character at the cursor, consumed, however many bytes it took.
+    next_char(*self) -> Option[char]
+        var cs = chars_of(self.rest())
+
+        cs.next() match
+            Some(c) ->
+                self.at += cs.offset
+                Some(c)
+            None -> None
+    end next_char
+
+    // One character, if it is the one wanted. The comparison is against a `char` rather than a byte,
+    // so `s.accept_char('é')` is a thing a grammar may write.
+    accept_char(*self, c: char) -> bool
+        var cs = chars_of(self.rest())
+
+        cs.next() match
+            Some(got) ->
+                if got == c then
+                    self.at += cs.offset
+                    true
+                else
+                    false
+            None -> false
+    end accept_char
+
+    // -- positions ----------------------------------------------------------------------------
+
+    // Where the cursor is, to be handed back to `reset`.
+    //
+    // A mark is an offset and nothing more, so keeping one costs a `usize` and backtracking is one
+    // assignment. What it does **not** do is undo anything a caller did in between: a grammar that
+    // built half a node and then reset has half a node, and this package has no opinion about that.
+    mark(self) -> usize = self.at
+
+    reset(*self, m: usize)
+        self.at = if m > self.src.len then self.src.len else m
+
+    // The span from a mark to the cursor, which is how a token's span is taken: mark before, read,
+    // and ask for the span after.
+    span_from(self, m: usize) -> Span = Span(m, self.at)
+
+    // A span of no width where the cursor is, which is what a report about something *missing*
+    // points at.
+    here(self) -> Span = point(self.at)
+
+    // The bytes between a mark and the cursor -- the token's own text, borrowed rather than copied.
+    text_from(self, m: usize) -> []const u8 = self.src[m..<self.at]
+end Scanner
+
+// A cursor over bytes, at the beginning of them.
+scanner(src: []const u8) -> Scanner = Scanner(src, 0)
+
+// The same over text that is already a `string`, because `string` does not coerce to `[]const u8`
+// and `"…".bytes` is a thing to have to know at the first line.
+scanner_of(text: string) -> Scanner = scanner(text.bytes)
+
+// A cursor over the whole of an input, sharing its bytes.
+scan(s: Source) -> Scanner = scanner(s.bytes)
+
+// Whether a byte is in a set, which is `sysl.slices.contains` specialised to the one type this file
+// asks it about -- and written out because a set of bytes is spelled as a literal at nearly every
+// call, where the generic form would have to be told what it was looking at.
+private contains_byte(set: []const u8, c: u8) -> bool
+    for i in 0..<set.len
+        if set[i] == c then return true
+
+    false
+end contains_byte

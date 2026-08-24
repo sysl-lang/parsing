@@ -1,0 +1,369 @@
+module sh.sysl.parsing
+@tests
+
+// What this package claims, run by `sysl test .`.
+
+// -- source -----------------------------------------------------------------------------------
+
+@test
+an_empty_input_has_one_line()
+    val s = source_of("<empty>", "")
+
+    assert_eq(s.line_count(), 1)
+    assert_eq(s.locate(0), Loc(1, 1))
+end an_empty_input_has_one_line
+
+@test
+lines_are_counted_from_one()
+    val s = source_of("t", "ab\ncd\n\nef")
+
+    assert_eq(s.line_count(), 4)
+    assert_eq(s.locate(0), Loc(1, 1))
+    assert_eq(s.locate(1), Loc(1, 2))
+    assert_eq(s.locate(3), Loc(2, 1))
+    assert_eq(s.locate(6), Loc(3, 1))
+    assert_eq(s.locate(7), Loc(4, 1))
+end lines_are_counted_from_one
+
+@test
+an_offset_past_the_end_lands_after_the_last_character()
+    val s = source_of("t", "ab")
+
+    assert_eq(s.locate(2), Loc(1, 3))
+    assert_eq(s.locate(99), Loc(1, 3))
+end an_offset_past_the_end_lands_after_the_last_character
+
+@test
+a_column_counts_characters_and_not_bytes()
+    val s = source_of("t", "héllo")
+
+    assert_eq(s.locate(1), Loc(1, 2))
+    assert_eq(s.locate(3), Loc(1, 3))
+end a_column_counts_characters_and_not_bytes
+
+// The end of an input that ends in a newline is the start of an empty line, and a diagnostic about
+// something missing at the end of the file has to have somewhere to point.
+@test
+a_trailing_newline_opens_an_empty_last_line()
+    val s = source_of("t", "ab\n")
+
+    assert_eq(s.line_count(), 2)
+    assert_eq(s.locate(3), Loc(2, 1))
+    assert(s.line_span(2).is_empty(), "the last line is empty")
+end a_trailing_newline_opens_an_empty_last_line
+
+@test
+a_line_is_handed_back_without_its_terminator()
+    val s = source_of("t", "ab\r\ncd\n")
+
+    assert(sysl.slices.equal(s.line_text(1), "ab".bytes), "the first line")
+    assert(sysl.slices.equal(s.line_text(2), "cd".bytes), "the second line")
+end a_line_is_handed_back_without_its_terminator
+
+@test
+a_span_covers_both_of_its_children()
+    assert_eq(Span(2, 4).to(Span(7, 9)), Span(2, 9))
+    assert_eq(Span(7, 9).to(Span(2, 4)), Span(2, 9))
+    assert(point(3).is_empty(), "a point spans nothing")
+end a_span_covers_both_of_its_children
+
+// -- scan -------------------------------------------------------------------------------------
+
+@test
+a_scanner_walks_bytes()
+    var s = scanner_of("ab")
+
+    assert_eq(s.peek(), Some(u8('a')))
+    assert_eq(s.peek_at(1), Some(u8('b')))
+    assert_eq(s.peek_at(2), None)
+    assert_eq(s.next(), Some(u8('a')))
+    assert_eq(s.next(), Some(u8('b')))
+    assert_eq(s.next(), None)
+    assert(s.at_end(), "the end")
+end a_scanner_walks_bytes
+
+@test
+a_cursor_saturates_at_the_end()
+    var s = scanner_of("a")
+
+    s.bump()
+    s.bump()
+    s.bump()
+    assert_eq(s.offset, 1)
+    assert_eq(s.remaining(), 0)
+end a_cursor_saturates_at_the_end
+
+@test
+accepting_moves_only_on_a_match()
+    var s = scanner_of("-1")
+
+    assert(!s.accept(u8('+')), "no plus")
+    assert_eq(s.offset, 0)
+    assert(s.accept(u8('-')), "a minus")
+    assert_eq(s.offset, 1)
+end accepting_moves_only_on_a_match
+
+@test
+a_run_is_all_or_nothing()
+    var s = scanner_of("-->x")
+
+    assert(!s.accept_seq("--!".bytes), "a partial match moves nothing")
+    assert_eq(s.offset, 0)
+    assert(s.starts_with("-->".bytes), "starts_with")
+    assert(s.accept_seq("-->".bytes), "the whole run")
+    assert_eq(s.offset, 3)
+end a_run_is_all_or_nothing
+
+@test
+accepting_from_a_set_and_by_a_predicate()
+    var s = scanner_of("12+")
+
+    assert(s.accept_if(digit), "a digit by a named predicate")
+    assert(s.accept_if((c) -> c >= u8('0') && c <= u8('9')), "a digit by a closure")
+    assert(!s.accept_any("*/".bytes), "not in the set")
+    assert(s.accept_any("+-".bytes), "in the set")
+    assert(s.at_end(), "all of it")
+end accepting_from_a_set_and_by_a_predicate
+
+@test
+runs_report_how_far_they_went()
+    var s = scanner_of("123abc")
+
+    assert_eq(s.accept_while(digit), 3)
+    assert_eq(s.accept_while(digit), 0)
+    assert_eq(s.accept_until(digit), 3)
+    assert(s.at_end(), "the end")
+end runs_report_how_far_they_went
+
+@test
+skip_until_stops_on_the_byte_it_found()
+    var s = scanner_of("bad tokens , then")
+
+    assert_eq(s.skip_until(",;".bytes), 11)
+    assert_eq(s.peek(), Some(u8(',')))
+end skip_until_stops_on_the_byte_it_found
+
+@test
+skip_until_stops_at_the_end_when_nothing_is_there()
+    var s = scanner_of("nothing here")
+
+    assert_eq(s.skip_until(",;".bytes), 12)
+    assert(s.at_end(), "the end")
+end skip_until_stops_at_the_end_when_nothing_is_there
+
+@test
+a_mark_takes_the_token_and_puts_the_cursor_back()
+    var s = scanner_of("let x")
+    val m = s.mark()
+
+    assert_eq(s.accept_while(alpha), 3)
+    assert_eq(s.span_from(m), Span(0, 3))
+    assert(sysl.slices.equal(s.text_from(m), "let".bytes), "the token's own text")
+
+    s.reset(m)
+    assert_eq(s.offset, 0)
+    assert_eq(s.here(), Span(0, 0))
+end a_mark_takes_the_token_and_puts_the_cursor_back
+
+@test
+characters_are_read_whole()
+    var s = scanner_of("héllo")
+
+    assert_eq(s.next_char(), Some('h'))
+    assert_eq(s.peek_char(), Some('é'))
+    assert_eq(s.offset, 1)
+    assert(s.accept_char('é'), "the accented character")
+    assert_eq(s.offset, 3)
+    assert(!s.accept_char('x'), "not that one")
+    assert_eq(s.offset, 3)
+end characters_are_read_whole
+
+private digit(c: u8) -> bool = c >= u8('0') && c <= u8('9')
+
+private alpha(c: u8) -> bool = (c >= u8('a') && c <= u8('z')) || (c >= u8('A') && c <= u8('Z'))
+
+// -- literal ----------------------------------------------------------------------------------
+
+private int_of(text: string) -> Result[ulong, LitError]
+    var s = scanner_of(text)
+
+    read_integer(&s)
+end int_of
+
+@test
+integers_in_every_base()
+    assert_eq(int_of("0").unwrap(), 0)
+    assert_eq(int_of("42").unwrap(), 42)
+    assert_eq(int_of("0xFF").unwrap(), 255)
+    assert_eq(int_of("0XfF").unwrap(), 255)
+    assert_eq(int_of("0o17").unwrap(), 15)
+    assert_eq(int_of("0b1011").unwrap(), 11)
+    assert_eq(int_of("007").unwrap(), 7)
+end integers_in_every_base
+
+@test
+underscores_separate_and_do_not_lead_or_trail()
+    assert_eq(int_of("1_000_000").unwrap(), 1000000)
+    assert(int_of("_1").is_err(), "a leading underscore")
+    assert(int_of("1_").is_err(), "a trailing underscore")
+    assert(int_of("1__0").is_err(), "a doubled underscore")
+end underscores_separate_and_do_not_lead_or_trail
+
+@test
+a_prefix_with_no_digits_is_refused()
+    assert(int_of("0x").is_err(), "0x alone")
+    assert(int_of("0b").is_err(), "0b alone")
+end a_prefix_with_no_digits_is_refused
+
+@test
+the_largest_value_fits_and_the_next_one_does_not()
+    assert_eq(int_of("18446744073709551615").unwrap(), 18446744073709551615)
+    assert(int_of("18446744073709551616").is_err(), "one past the top")
+    assert(int_of("0xFFFFFFFFFFFFFFFFF").is_err(), "seventeen hex digits")
+end the_largest_value_fits_and_the_next_one_does_not
+
+// An overflowing literal consumes all of its digits, so the grammar resumes after the number rather
+// than in the middle of it and reports one error instead of two.
+@test
+an_overflow_still_consumes_the_whole_number()
+    var s = scanner_of("99999999999999999999999 +")
+
+    assert(read_integer(&s).is_err(), "too large")
+    assert_eq(s.peek(), Some(u8(' ')))
+end an_overflow_still_consumes_the_whole_number
+
+private num_of(text: string) -> Result[Number, LitError]
+    var s = scanner_of(text)
+
+    read_number(&s)
+end num_of
+
+@test
+a_number_is_an_integer_until_something_says_otherwise()
+    num_of("12").unwrap() match
+        Int(v) -> assert_eq(v, 12)
+        Real(_) -> assert(false, "12 is an integer")
+
+    num_of("1.5").unwrap() match
+        Int(_) -> assert(false, "1.5 is not an integer")
+        Real(x) -> assert_eq(x, 1.5)
+
+    num_of("1e3").unwrap() match
+        Int(_) -> assert(false, "1e3 is not an integer")
+        Real(x) -> assert_eq(x, 1000.0)
+
+    num_of("2E-2").unwrap() match
+        Int(_) -> assert(false, "2E-2 is not an integer")
+        Real(x) -> assert_eq(x, 0.02)
+
+    num_of("1_000.5").unwrap() match
+        Int(_) -> assert(false, "not an integer")
+        Real(x) -> assert_eq(x, 1000.5)
+end a_number_is_an_integer_until_something_says_otherwise
+
+// The dot belongs to the number only when a digit follows it, which is what keeps `0..<n` and
+// `1.max()` readable without a space.
+@test
+a_dot_with_no_digit_after_it_is_not_part_of_the_number()
+    var s = scanner_of("0..<8")
+
+    s.offset
+
+    read_number(&s).unwrap() match
+        Int(v) -> assert_eq(v, 0)
+        Real(_) -> assert(false, "not a float")
+
+    assert_eq(s.offset, 1)
+
+    var t = scanner_of("1.max()")
+
+    read_number(&t).unwrap() match
+        Int(v) -> assert_eq(v, 1)
+        Real(_) -> assert(false, "not a float")
+
+    assert_eq(t.offset, 1)
+end a_dot_with_no_digit_after_it_is_not_part_of_the_number
+
+@test
+a_prefixed_literal_is_never_a_float()
+    var s = scanner_of("0x1.8")
+
+    read_number(&s).unwrap() match
+        Int(v) -> assert_eq(v, 1)
+        Real(_) -> assert(false, "no hexadecimal floats")
+
+    // The dot and the digit after it are left where they are: C's `0x1.8p3` is a hexadecimal float
+    // and this is not a reader of one, so what the grammar gets back is the integer and a cursor
+    // pointing at something it has to decide about itself.
+    assert_eq(s.offset, 3)
+end a_prefixed_literal_is_never_a_float
+
+private quoted(text: string) -> Result[string, LitError]
+    var s = scanner_of(text)
+
+    read_quoted(&s, u8('"'))
+end quoted
+
+@test
+escapes_decode()
+    assert_eq(quoted("\"a\\nb\"").unwrap(), "a\nb")
+    assert_eq(quoted("\"\\t\\r\\\\\\\"\"").unwrap(), "\t\r\\\"")
+    assert_eq(quoted("\"\\x41\"").unwrap(), "A")
+    assert_eq(quoted("\"\\u0041\"").unwrap(), "A")
+    assert_eq(quoted("\"\\u{1F600}\"").unwrap(), "😀")
+end escapes_decode
+
+// JSON writes an astral character as a UTF-16 pair and UTF-8 has no such thing, so the pair is put
+// back together here or the text comes out as two errors.
+@test
+a_surrogate_pair_is_one_character()
+    assert_eq(quoted("\"\\ud83d\\ude00\"").unwrap(), "😀")
+    assert(quoted("\"\\ud83d\"").is_err(), "a high surrogate alone")
+    assert(quoted("\"\\ude00\"").is_err(), "a low surrogate alone")
+    assert(quoted("\"\\ud83dx\"").is_err(), "a pair that is not one")
+end a_surrogate_pair_is_one_character
+
+@test
+a_quote_that_never_closes_is_refused()
+    assert(quoted("\"abc").is_err(), "no closing quote")
+    assert(quoted("\"abc\\").is_err(), "ends inside an escape")
+    assert(quoted("abc").is_err(), "no opening quote")
+end a_quote_that_never_closes_is_refused
+
+@test
+a_bad_escape_names_the_backslash()
+    var s = scanner_of("\"a\\qb\"")
+
+    read_quoted(&s, u8('"')) match
+        Ok(_) -> assert(false, "q is not an escape")
+        Err(e) -> assert_eq(where(e), Span(2, 2))
+end a_bad_escape_names_the_backslash
+
+@test
+text_outside_the_escapes_is_copied_whole()
+    assert_eq(quoted("\"héllo wörld\"").unwrap(), "héllo wörld")
+    assert_eq(quoted("\"\"").unwrap(), "")
+end text_outside_the_escapes_is_copied_whole
+
+@test
+a_character_literal_holds_exactly_one()
+    var s = scanner_of("'a'")
+
+    assert_eq(read_char_literal(&s, u8('\'')).unwrap(), 'a')
+
+    var t = scanner_of("'\\n'")
+
+    assert_eq(read_char_literal(&t, u8('\'')).unwrap(), '\n')
+
+    var u = scanner_of("'é'")
+
+    assert_eq(read_char_literal(&u, u8('\'')).unwrap(), 'é')
+
+    var v = scanner_of("''")
+
+    assert(read_char_literal(&v, u8('\'')).is_err(), "nothing between the quotes")
+
+    var w = scanner_of("'ab'")
+
+    assert(read_char_literal(&w, u8('\'')).is_err(), "two characters")
+end a_character_literal_holds_exactly_one

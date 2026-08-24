@@ -1,0 +1,429 @@
+module sh.sysl.parsing
+
+import sysl.buf.{Buf, buf}
+import sysl.text.{Ascii, char_from_u32, from_utf8, parse_real, str_builder}
+
+// Numbers and quoted text, read off a `Scanner`.
+//
+// **This is the part of a lexer that is the same in every grammar and wrong in most of them.** The
+// digits are easy; what is not is the overflow that has to be caught before the arithmetic that
+// would wrap, the underscore that may separate digits and may not lead them, the escape that runs
+// off the end of the input, and the surrogate pair that JSON writes and UTF-8 does not have. Each of
+// those is a line of code and a day of somebody's life.
+//
+// **What is not here is policy.** Whether a language has binary literals, whether `1_000` is a
+// number, whether a string may span a line, whether `\e` is an escape -- those are the grammar's
+// answers, not this package's. So the readers below take the *shape* they are asked for and the
+// caller decides what to call: a JSON reader consumes its own `\u` escapes with `read_escape`
+// because JSON's set is C's minus most of it, and refuses a leading zero itself because that is
+// JSON's rule and nothing here has an opinion about it.
+
+// Why a literal was refused.
+//
+// The positions are byte offsets rather than spans where a single place is what a reader would
+// point at -- the digit that is not one, the escape that is not one -- and spans where the thing
+// that went wrong has an extent, like a string that never closed.
+enum LitError
+    // A prefix with no digits after it: `0x`, or `1e` with no exponent.
+    NoDigits(at: usize)
+    // A digit outside the base, or an underscore where a digit was needed.
+    BadDigit(at: usize)
+    // The value does not fit 64 bits.
+    Overflow(span: Span)
+    // A quote, or an escape, that the end of the input arrived in the middle of.
+    Unterminated(span: Span)
+    // The cursor was not on the opening quote the reader was told to expect.
+    NoQuote(at: usize)
+    // A backslash followed by something that is not an escape.
+    BadEscape(at: usize)
+    // An escape naming a value that is not a character: past U+10FFFF, or a lone surrogate.
+    BadCodepoint(at: usize)
+    // A float whose shape scanned and whose value would not convert, which is the machine's limit
+    // rather than the input's mistake.
+    BadReal(span: Span)
+end LitError
+
+impl Display for LitError
+    display(self, out: *Writer, fmt: FormatSpec)
+        val text = self match
+            NoDigits(_) -> "no digits"
+            BadDigit(_) -> "not a digit"
+            Overflow(_) -> "the number is too large to hold"
+            Unterminated(_) -> "unterminated"
+            NoQuote(_) -> "not a quoted literal"
+            BadEscape(_) -> "not an escape"
+            BadCodepoint(_) -> "not a character"
+            BadReal(_) -> "not a number this machine can hold"
+
+        display_str(text, out, fmt)
+    end display
+
+// Where a refusal happened, for a caller assembling a diagnostic out of one.
+where(e: LitError) -> Span
+    e match
+        NoDigits(at) -> point(at)
+        BadDigit(at) -> point(at)
+        Overflow(s) -> s
+        Unterminated(s) -> s
+        NoQuote(at) -> point(at)
+        BadEscape(at) -> point(at)
+        BadCodepoint(at) -> point(at)
+        BadReal(s) -> s
+end where
+
+// What a number turned out to be.
+//
+// The two are one reader because a grammar cannot know which it is looking at until it has read
+// past the digits: `1` and `1.5` and `1e9` all begin the same way, and a lexer that committed to an
+// integer at the first digit has to put it back.
+enum Number
+    Int(v: ulong)
+    Real(v: real)
+end Number
+
+// The largest value the accumulation may hold. Written as a `val` with the type on it because
+// `18446744073709551615` is not an `int` and cannot be one.
+private val ulong_max: ulong = 18446744073709551615
+
+// A run of digits in a base, with underscores allowed between them.
+//
+// **The overflow test happens before the arithmetic that would overflow**, because integer
+// arithmetic wraps rather than trapping: an accumulator that has already wrapped is not a number a
+// later comparison can learn anything from. This is the same reasoning `sysl.text.parse_ulong_base`
+// is written around, and the answer is the same one -- ask whether the multiply and the add would
+// fit, before doing them.
+//
+// **An underscore must sit between two digits.** `1_000` is a number and `_1`, `1_` and `1__0` are
+// not, which is the rule Rust, Ada and sysl itself all keep: a separator that may lead or trail is
+// one that can be typed by accident and read as nothing.
+read_digits(s: *Scanner, base: int) -> Result[ulong, LitError]
+    val start = s.offset
+    var v: ulong = 0
+    var digits: usize = 0
+
+    loop
+        s.peek() match
+            Some(c) ->
+                if c == u8('_') then
+                    if digits == 0 then return Err(BadDigit(s.offset))
+
+                    s.bump()
+
+                    // A separator has to be followed by a digit, so the byte after it is looked at
+                    // here rather than left to the next turn of the loop -- where the run simply
+                    // ending would have looked like a legal number.
+                    s.peek() match
+                        Some(d) ->
+                            if d.digit_value(base).is_none() then return Err(BadDigit(s.offset))
+                        None -> return Err(BadDigit(s.offset))
+                else
+                    c.digit_value(base) match
+                        Some(d) ->
+                            val b = ulong(base)
+                            val dv = ulong(d)
+
+                            if v > (ulong_max - dv) / b then
+                                // The rest of the run belongs to the number the caller wrote, so it
+                                // is consumed before reporting -- otherwise the grammar resumes in
+                                // the middle of the digits and reports a second error about them.
+                                s.accept_while((x) -> x == u8('_') || x.digit_value(base).is_some())
+                                return Err(Overflow(s.span_from(start)))
+
+                            v = v * b + dv
+                            digits += 1
+                            s.bump()
+                        None -> break
+            None -> break
+
+    if digits == 0 then Err(NoDigits(start)) else Ok(v)
+end read_digits
+
+// An integer, with the radix prefix if it has one.
+//
+// `0x`/`0X` is hexadecimal, `0o`/`0O` octal, `0b`/`0B` binary, and anything else decimal -- which
+// makes a leading zero an ordinary decimal digit rather than C's octal. A language wanting C's rule
+// reads the zero itself and calls `read_digits(s, 8)`; a language wanting JSON's, where a leading
+// zero is refused outright, tests for it before calling this. Neither is a flag here.
+read_integer(s: *Scanner) -> Result[ulong, LitError]
+    if s.peek() == Some(u8('0')) then
+        s.peek_at(1) match
+            Some(p) ->
+                val base = if p == u8('x') || p == u8('X') then
+                        16
+                    elif p == u8('o') || p == u8('O') then
+                        8
+                    elif p == u8('b') || p == u8('B') then
+                        2
+                    else
+                        0
+
+                if base != 0 then
+                    s.skip(2)
+                    return read_digits(s, base)
+            None -> ()
+
+    read_digits(s, 10)
+end read_integer
+
+// An integer or a float, decided by what follows the digits.
+//
+// A `.` is part of the number only when a digit follows it, so `1.max()` and `0..<n` read as an
+// integer and then something else -- which is the rule sysl's own lexer keeps and the reason a
+// range does not have to be written with a space in it. An `e` is part of it only when digits, or a
+// sign and then digits, follow.
+//
+// **The float path costs one allocation and the integer path costs none.** A float's value has to
+// come from `strtod`, which reads text, so the run is copied out with its underscores removed and
+// converted; the integers are accumulated in place. Correct rounding is worth a copy, and writing a
+// decimal-to-binary conversion by hand is how a language ends up with `0.1 + 0.2` disagreeing with
+// every other language on the machine.
+read_number(s: *Scanner) -> Result[Number, LitError]
+    val start = s.offset
+    var real_shaped = false
+
+    read_integer(s) match
+        Ok(v) ->
+            // A prefixed literal is an integer and nothing else: `0x1.8p3` is C's hexadecimal float
+            // and is not something this reads.
+            if s.offset - start >= 2 && s.src[start] == u8('0') && !s.src[start + 1].is_digit() then
+                return Ok(Int(v))
+
+            if s.peek() == Some(u8('.')) then
+                s.peek_at(1) match
+                    Some(d) ->
+                        if d.is_digit() then
+                            real_shaped = true
+                            s.bump()
+
+                            read_digits(s, 10) match
+                                Err(e) -> return Err(e)
+                                Ok(_) -> ()
+                    None -> ()
+
+            s.peek() match
+                Some(e) ->
+                    if e == u8('e') || e == u8('E') then
+                        val after = s.peek_at(1)
+                        val signed = after == Some(u8('+')) || after == Some(u8('-'))
+                        val first = if signed then s.peek_at(2) else after
+
+                        first match
+                            Some(d) ->
+                                if d.is_digit() then
+                                    real_shaped = true
+                                    s.skip(if signed then 2 else 1)
+
+                                    read_digits(s, 10) match
+                                        Err(er) -> return Err(er)
+                                        Ok(_) -> ()
+                            None -> ()
+                None -> ()
+
+            if !real_shaped then return Ok(Int(v))
+
+            val span = s.span_from(start)
+
+            to_real(s.src[span.start..<span.end]) match
+                Some(x) -> Ok(Real(x))
+                None -> Err(BadReal(span))
+        Err(e) -> Err(e)
+end read_number
+
+// The text of a float, underscores removed, through the library's one converter.
+private to_real(run: []const u8) -> Option[real]
+    var b: Buf[u8] = buf()
+
+    for i in 0..<run.len
+        if run[i] != u8('_') then b.push(run[i])
+
+    // The run is digits, a dot and a sign, so it is ASCII and the validation cannot refuse it.
+    from_utf8(b.view()) match
+        Ok(t) ->
+            parse_real(t) match
+                Ok(x) -> Some(x)
+                Err(_) -> None
+        Err(_) -> None
+end to_real
+
+// -- quoted text ----------------------------------------------------------------------------------
+
+// One escape, with the cursor on the backslash.
+//
+// **The set is the C family's**, which is what sysl, JSON, Java, JavaScript, Rust, Go and every
+// config format that has escapes at all took theirs from: `\\ \" \' \` \/ \0 \a \b \e \f \n \r \t
+// \v`, plus `\xHH`, `\u{H..H}` and the four-digit `\uHHHH`. A grammar wanting fewer tests the byte
+// after the backslash itself; a grammar wanting more reads its own and falls back to this.
+//
+// **`\uHHHH` pairs surrogates, and that is the whole reason it is worth having.** UTF-16 is the only
+// encoding that needs a pair and JSON is written in terms of it, so `"😀"` is one emoji
+// and not two errors -- while a lone `\ud83d` is refused, because there is no character there to
+// answer with. Nothing else on the machine gets this right by accident.
+//
+// **`\xHH` is a codepoint, not a byte.** `\xff` is U+00FF and encodes as the two bytes UTF-8 gives
+// it, rather than one byte 0xFF that would make the text invalid. A grammar that wants arbitrary
+// bytes in a literal is asking for a byte string, which is a different reader.
+read_escape(s: *Scanner) -> Result[char, LitError]
+    val start = s.offset
+
+    if !s.accept(u8('\\')) then return Err(BadEscape(start))
+
+    s.next() match
+        None -> Err(Unterminated(s.span_from(start)))
+        Some(c) ->
+            if c == u8('n') then
+                Ok('\n')
+            elif c == u8('t') then
+                Ok('\t')
+            elif c == u8('r') then
+                Ok('\r')
+            elif c == u8('0') then
+                Ok(char(0u32))
+            elif c == u8('a') then
+                Ok(char(7u32))
+            elif c == u8('b') then
+                Ok(char(8u32))
+            elif c == u8('f') then
+                Ok(char(12u32))
+            elif c == u8('v') then
+                Ok(char(11u32))
+            elif c == u8('e') then
+                Ok(char(27u32))
+            elif c == u8('\\') || c == u8('"') || c == u8('\'') || c == u8('`') || c == u8('/') then
+                Ok(char(u32(c)))
+            elif c == u8('x') then
+                read_hex(s, 2, start) match
+                    Ok(v) -> to_char(v, start)
+                    Err(e) -> Err(e)
+            elif c == u8('u') then
+                read_u_escape(s, start)
+            else
+                Err(BadEscape(start))
+end read_escape
+
+// The `\u` half, which is two different escapes wearing one letter.
+private read_u_escape(s: *Scanner, start: usize) -> Result[char, LitError]
+    if s.accept(u8('{')) then
+        var v: u32 = 0
+        var n = 0
+
+        while !s.at_end() && s.peek() != Some(u8('}'))
+            s.next() match
+                Some(c) ->
+                    c.digit_value(16) match
+                        Some(d) ->
+                            n += 1
+
+                            if n > 6 then return Err(BadCodepoint(start))
+
+                            v = v * 16 + u32(d)
+                        None -> return Err(BadCodepoint(start))
+                None -> ()
+
+        if !s.accept(u8('}')) then return Err(Unterminated(s.span_from(start)))
+        if n == 0 then return Err(NoDigits(start))
+
+        return to_char(v, start)
+
+    read_hex(s, 4, start) match
+        Err(e) -> Err(e)
+        Ok(hi) ->
+            // A high surrogate is half of a character, so the other half has to be there. `\ud83d`
+            // alone is refused rather than turned into U+FFFD: this reads a literal, and a literal
+            // that says half a character is a mistake in the text rather than damage to it.
+            if hi >= 0xD800u32 && hi <= 0xDBFFu32 then
+                if !s.accept_seq("\\u".bytes) then return Err(BadCodepoint(start))
+
+                read_hex(s, 4, start) match
+                    Err(e) -> Err(e)
+                    Ok(lo) ->
+                        if lo < 0xDC00u32 || lo > 0xDFFFu32 then return Err(BadCodepoint(start))
+
+                        to_char(0x10000u32 + ((hi - 0xD800u32) << 10) + (lo - 0xDC00u32), start)
+            else
+                to_char(hi, start)
+end read_u_escape
+
+// Exactly `n` hexadecimal digits, which is what the fixed-width escapes take -- a short run is the
+// input's mistake and not a shorter number.
+private read_hex(s: *Scanner, n: int, start: usize) -> Result[u32, LitError]
+    var v: u32 = 0
+
+    for _ in 0..<n
+        s.next() match
+            None -> return Err(Unterminated(s.span_from(start)))
+            Some(c) ->
+                c.digit_value(16) match
+                    Some(d) -> v = v * 16 + u32(d)
+                    None -> return Err(BadDigit(s.offset - 1))
+
+    Ok(v)
+end read_hex
+
+private to_char(v: u32, start: usize) -> Result[char, LitError]
+    char_from_u32(v) match
+        Some(c) -> Ok(c)
+        None -> Err(BadCodepoint(start))
+
+// A quoted literal, with the cursor on the opening quote, handed back with its escapes decoded.
+//
+// The quote character is a parameter because which one a language uses -- and how many -- is the
+// language's business: `"` and `'` for most, `` ` `` for a raw form, and a grammar with two calls
+// this twice.
+//
+// **A newline inside is allowed and is not this reader's decision either.** A language that ends a
+// string at the end of the line tests for one itself; what is refused here is only the input
+// running out, because at that point there is nothing left to decide.
+read_quoted(s: *Scanner, quote: u8) -> Result[string, LitError]
+    val start = s.offset
+
+    if !s.accept(quote) then return Err(NoQuote(start))
+
+    var b = str_builder()
+
+    loop
+        s.peek() match
+            None -> return Err(Unterminated(s.span_from(start)))
+            Some(c) ->
+                if c == quote then
+                    s.bump()
+                    break
+                elif c == u8('\\') then
+                    read_escape(s) match
+                        Err(e) -> return Err(e)
+                        Ok(ch) -> b.push_char(ch)
+                else
+                    s.next_char() match
+                        Some(ch) -> b.push_char(ch)
+                        None -> return Err(Unterminated(s.span_from(start)))
+
+    Ok(b.finish())
+end read_quoted
+
+// A character literal: one character between two quotes, escapes included.
+//
+// It is a reader of its own rather than `read_quoted` with a length check, because what is wanted
+// back is a `char` and because "exactly one" is the whole of its contract -- `''` and `'ab'` are
+// both refused, and the second is refused at the character that should have been the closing quote.
+read_char_literal(s: *Scanner, quote: u8) -> Result[char, LitError]
+    val start = s.offset
+
+    if !s.accept(quote) then return Err(NoQuote(start))
+
+    val c = s.peek() match
+        None -> return Err(Unterminated(s.span_from(start)))
+        Some(b) ->
+            if b == quote then return Err(NoDigits(s.offset))
+
+            if b == u8('\\') then
+                read_escape(s) match
+                    Err(e) -> return Err(e)
+                    Ok(ch) -> ch
+            else
+                s.next_char() match
+                    Some(ch) -> ch
+                    None -> return Err(Unterminated(s.span_from(start)))
+
+    if !s.accept(quote) then return Err(Unterminated(s.span_from(start)))
+
+    Ok(c)
+end read_char_literal

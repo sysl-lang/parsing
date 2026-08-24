@@ -1,0 +1,50 @@
+// The parts of a hand-written parser that every grammar rewrites.
+//
+// A program that has to read a config format, a wire text format or a source language starts at the
+// byte cursor and builds the same four things every time: a scanner, a span, literal scanning with
+// its escape rules, and a way to say where the mistake was. This package is those four, plus the
+// two that are fiddly enough to be worth writing once -- the layout pass an indentation-sensitive
+// grammar needs, and the binding-power loop an expression grammar needs.
+//
+// **It is not a parser generator and not a combinator library.** A grammar stays hand-written
+// recursive descent, which is what Clang, rustc, Go, TypeScript, Swift, Zig and javac all are; what
+// this removes is the four hundred lines underneath it that are the same in all of them.
+//
+// This is the block a *consumer* writes to reach this package:
+//
+//     dependencies {
+//       parsing { git = "github.com/sysl-lang/parsing", version = "0.1.0" }
+//     }
+//
+// The coordinate names the package, `parsing`; the module a program imports is `sh.sysl.parsing`.
+// The module carries the `sh.sysl.` prefix so that no package claims a top-level word another one
+// might want, and the package name is the short one because it names this repository rather than a
+// namespace.
+
+package {
+  name    = "parsing"
+  version = "0.1.0"
+}
+
+// **`heap = true`, and the reason is one field.** `Source` holds a line-start table, and how many
+// lines an input has is not known until it has been read, so the table is a `Buf[usize]`. Everything
+// else here allocates nothing: `Scanner` is a slice and an offset, `Span` and `Loc` are two integers
+// each, `literal` decodes into a buffer the caller supplies, and `pratt` is a loop over callbacks.
+//
+// **The alternative was refused deliberately.** The table could have been caller-supplied -- an
+// array sized by counting newlines first -- which would have let the package state `requires {}` and
+// run on a target with no allocator. What it costs is that every consumer counts newlines twice and
+// carries storage whose size it has to have worked out, in order to reach a table that exists for
+// the error path. The scanner tier is the part a microcontroller would want and it is the part that
+// needs nothing; a program on such a target can use `Scanner` directly against its own bytes and
+// never build a `Source`. That is a real cost of this clause and it is being accepted, not fixed:
+// today the capability is claimed for the whole package, so such a program cannot depend on it at
+// all.
+//
+// **What is NOT here is `os` or `posix`.** Nothing in this package opens, reads or writes anything.
+// A `Source` is made over bytes the caller already has, and a diagnostic renders into a sink the
+// caller passes -- so where the input came from and where the report goes are both the program's
+// business.
+requires {
+  heap = true
+}
