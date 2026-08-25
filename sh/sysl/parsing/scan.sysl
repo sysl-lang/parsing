@@ -2,9 +2,6 @@ module sh.sysl.parsing
 
 import sysl.text.chars_of
 
-// The two bytes of a Windows line ending, as a slice to match against rather than a pair to test.
-private val crlf: []const u8 = [u8('\r'), u8('\n')]
-
 // The cursor every grammar starts with.
 //
 // A `Scanner` is a slice and an offset, and it allocates nothing -- so it is the part of this
@@ -246,10 +243,21 @@ struct Scanner
     // One line terminator, consumed. **`\r\n` is one and not two**, which is the whole reason this
     // is a member: a grammar counting lines, or ending a statement at a newline, sees one ending on
     // a file written on either kind of machine.
+    //
+    // **It is written as two byte tests rather than as a match against a two-byte slice, and that is
+    // not a micro-optimisation.** The slice had to live somewhere, and a module-level `val` holding
+    // it is *module storage* — which an initializer fills before a program's statements run, and
+    // which a `build-c` archive for a freestanding target has no entry point and no loader to fill.
+    // So an `@export` reaching this was refused outright on a bare-metal target, which is every
+    // consumer this package's own manifest says the scanner tier is for. Found 2026-08-25 by ogol's
+    // reader, the package's first such consumer.
     accept_newline(*self) -> bool
-        if self.accept_seq(crlf) then return true
+        if self.accept(u8('\r'))
+            val _ = self.accept(u8('\n'))
 
-        self.accept(u8('\n')) || self.accept(u8('\r'))
+            return true
+
+        self.accept(u8('\n'))
 
     // The rest of the line and its terminator.
     skip_line(*self)

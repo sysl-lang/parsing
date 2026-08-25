@@ -503,6 +503,30 @@ crlf_is_one_line_ending()
     assert_eq(lines, 2)
 end crlf_is_one_line_ending
 
+// **A bare `\r` is a line ending too**, which is the case the two-byte-slice version got for free from
+// its trailing `|| accept('\r')` and which the byte-test version has to be checked for on purpose.
+// Classic Mac text is the reason anybody meets one; a stray `\r` from a serial line is the reason
+// anybody meets one *now*.
+@test
+a_bare_carriage_return_is_a_line_ending()
+    var s = scanner_of("a\rb")
+
+    s.skip_to_line_end()
+
+    assert(s.accept_newline(), "the lone carriage return")
+    assert_eq(s.offset, 2)
+end a_bare_carriage_return_is_a_line_ending
+
+// And it must not eat the character after it, which is the way a two-byte reader gets this wrong: a
+// `\r` followed by anything other than `\n` is one byte of ending and no more.
+@test
+a_carriage_return_takes_only_a_newline_with_it()
+    var s = scanner_of("\rx")
+
+    assert(s.accept_newline(), "the ending")
+    assert_eq(s.peek(), Some(u8('x')))
+end a_carriage_return_takes_only_a_newline_with_it
+
 @test
 comments_run_to_the_end_of_the_line()
     var s = scanner_of("// gone\nkept")

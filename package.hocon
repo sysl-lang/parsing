@@ -13,7 +13,7 @@
 // This is the block a *consumer* writes to reach this package:
 //
 //     dependencies {
-//       parsing { git = "github.com/sysl-lang/parsing", version = "0.2.0" }
+//       parsing { git = "github.com/sysl-lang/parsing", version = "0.2.1" }
 //     }
 //
 // The coordinate names the package, `parsing`; the module a program imports is `sh.sysl.parsing`.
@@ -23,7 +23,7 @@
 
 package {
   name    = "parsing"
-  version = "0.2.0"
+  version = "0.2.1"
 
   // **The oldest compiler this builds with, and it is a released one.** Three of 0.0.76's changes
   // are written into these files rather than merely available to them: a `match` standing as an
@@ -37,6 +37,29 @@ package {
   // living, so it is the first thing to notice what reading text is awkward to write.
   sysl = "0.0.76"
 }
+
+// **0.2.1 -- ONE FIX, AND IT IS WHAT LETS THIS PACKAGE BE USED ON A BARE-METAL TARGET AT ALL.**
+// `accept_newline` matched a two-byte slice held in a module-level `val`, and a module-level `val` is
+// *module storage*: an initializer fills it before a program's statements run, and a `build-c` archive
+// for a freestanding target has no entry point and no loader to run one. So an `@export` that reached
+// `accept_newline` -- which is every lexer that recognises a line ending -- was refused outright:
+//
+//     error: 'boot' is exported and reaches '...parsing.crlf', which is module storage an
+//     initializer fills before the program's own statements run ...
+//
+// It is written as two byte tests now, which needs no storage and is faster. **Found 2026-08-25 by
+// ogol's reader**, this package's first consumer on a board, and it had been there since 0.1.0 --
+// nothing had looked, because until then nothing here ran anywhere but a host.
+//
+// **The check is a command and there is no test for it**, because `sysl test .` runs on the host and
+// cannot see this. Run it when anything here grows a module-level binding:
+//
+//     sysl build-c <a program with @export("main") reaching it> --target thumb-freestanding-softfp
+//
+// **A scalar `val` is fine and was checked rather than assumed** -- `literal.sysl`'s `ulong_max` is
+// laid into the object file as constant data, and a program reaching `read_digits` builds. What is not
+// fine is anything whose initializer is a *call*: `private const s: ByteSet = byte_set_of("...")` is
+// refused as "not a constant expression", so a set a grammar wants belongs in a local or on a struct.
 
 // **0.2.0 rather than 0.1.1, because one thing in it is not compatible.** `Dent.Ragged` carries the
 // number of blocks the ragged line closed, where it used to carry nothing -- a grammar matching on
