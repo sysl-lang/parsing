@@ -23,7 +23,7 @@
 
 package {
   name    = "parsing"
-  version = "0.2.1"
+  version = "0.3.0"
 
   // **The oldest compiler this builds with, and it is a released one.** Three of 0.0.76's changes
   // are written into these files rather than merely available to them: a `match` standing as an
@@ -37,6 +37,39 @@ package {
   // living, so it is the first thing to notice what reading text is awkward to write.
   sysl = "0.0.76"
 }
+
+// **0.3.0 -- A BLOCK MAY OPEN INSIDE BRACKETS, WHICH IS THE FEATURE `layout` WAS MISSING.**
+//
+// A bracket used to suspend the off-side rule outright, so a construct whose body is an indented
+// block could not be written as an argument:
+//
+//     print(n match
+//         0 -> "none"
+//         1 -> "one")
+//
+// The arms' newlines were inside a bracket pair and therefore meant nothing, so the block never
+// opened. sysl hit exactly this in its own grammar and fixed it in 0.0.76 (card `0248`); slate hit
+// it writing a `match` as a call argument, which is what brought it here.
+//
+// **The mechanism is this module's and the policy is the grammar's.** `opens_block` is how a lexer
+// says "the token I just emitted opens a block", and which tokens those are cannot be guessed here:
+// sysl's are `match` and `->` and deliberately nothing else, another language's might be `:` or `do`.
+// What `layout` now owns is the bookkeeping that makes such a block possible.
+//
+// Three things changed and two of them are incompatible:
+//
+// - **`close_bracket` answers how many blocks it closed.** A block opened inside a bracket pair is
+//   closed by the `)`, not by a line -- the `)` sits on the same line as the block's last line, so
+//   no line ending will ever close it. The count comes back so a lexer can emit those `DEDENT`s
+//   before the `)` it is about to emit. A caller that ignored the result needs no change; one that
+//   did not emit the dedents will drift.
+// - **`Layout.columns` is now `Layout.blocks`, a `Buf[Block]`.** Each open block records the bracket
+//   depth it was opened at, which is the whole of how `significant` decides: a newline counts where
+//   the bracket depth is the one the innermost block was opened at. That agrees with the old rule
+//   everywhere a block sits at the top level, which is why "no brackets are open" served until now.
+// - `Tokens.looked_back` answers the token just taken, value and all. `previous` gives its span;
+//   this gives what it was, which is what a block-structured grammar asks when deciding whether a
+//   statement has ended.
 
 // **0.2.1 -- ONE FIX, AND IT IS WHAT LETS THIS PACKAGE BE USED ON A BARE-METAL TARGET AT ALL.**
 // `accept_newline` matched a two-byte slice held in a module-level `val`, and a module-level `val` is

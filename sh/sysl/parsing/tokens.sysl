@@ -128,7 +128,21 @@ struct Tokens[T]
     // One more token on the end, which is what a lexer's loop does.
     push(*self, value: T, span: Span)
         self.items.push(Spanned(value, span))
+
+    // The token just taken, value and all.
+    //
+    // **`previous` answers where it was and this answers what it was**, and a grammar needs both.
+    // The one that is easy to leave out is this: a block-structured language asks "did a block just
+    // close?" to decide whether a statement has ended, and without it the only way to find out is to
+    // read `items` at `position - 1` by hand -- which is reaching through the struct to do something
+    // the struct should offer.
+    looked_back(self) -> Option[Spanned[T]]
+        if self.at == 0 then return None
+
+        Some(self.items.at(self.at - 1))
+    end looked_back
 end Tokens
+
 
 // An empty token list, to be filled by a lexer and then read by a parser.
 tokens[T]() -> Tokens[T] = Tokens(buf(), 0)

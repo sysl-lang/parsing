@@ -1090,7 +1090,12 @@ private dents(text: string) -> string
                     if c == u8('(') then
                         l.open_bracket()
                     elif c == u8(')') then
-                        l.close_bracket()
+                        // A bracket closing closes every block opened inside it, and the `DEDENT`s
+                        // go out before the `)` a lexer is about to emit.
+                        out = out + dedents(l.close_bracket())
+                    elif c == u8(':') then
+                        // This harness's stand-in for whatever token a grammar says opens a block.
+                        l.opens_block()
                 None -> ()
 
         val ended = s.accept_newline()
@@ -1152,11 +1157,103 @@ end a_newline_inside_brackets_means_nothing
 a_close_with_nothing_open_does_not_go_negative()
     var l = layout()
 
-    l.close_bracket()
+    assert_eq(l.close_bracket(), 0)
     assert(l.significant(), "still significant")
     l.open_bracket()
     assert(!l.significant(), "not while one is open")
 end a_close_with_nothing_open_does_not_go_negative
+
+@test
+a_block_may_open_inside_brackets_once_the_grammar_says_so()
+    // The case this exists for: `print(n match` with its arms indented under it. A bracket suspends
+    // line structure, and a token the grammar nominates un-suspends it for the block it opens.
+    var l = layout()
+
+    l.open_bracket()
+    assert(!l.significant(), "a newline inside brackets means nothing")
+
+    l.opens_block()
+    assert(l.significant(), "until the grammar says one opens here")
+
+    assert_eq(l.line(4), Deeper)
+    assert_eq(l.depth(), 1)
+    assert(l.significant(), "and then the block's own lines count")
+    assert_eq(l.line(4), Same)
+end a_block_may_open_inside_brackets_once_the_grammar_says_so
+
+@test
+the_bracket_closes_the_blocks_that_opened_inside_it()
+    // No line ending will ever close such a block: the `)` is on the same line as its last arm. So
+    // the bracket closes it, and says how many so a lexer can emit the `DEDENT`s.
+    var l = layout()
+
+    l.open_bracket()
+    l.opens_block()
+    assert_eq(l.line(4), Deeper)
+
+    assert_eq(l.close_bracket(), 1)
+    assert_eq(l.depth(), 0)
+    assert(l.significant(), "back where it started")
+end the_bracket_closes_the_blocks_that_opened_inside_it
+
+@test
+a_bracket_opened_inside_a_block_still_suspends_that_block()
+    // The rule that was there before, which the new one must not break: a block at the top level is
+    // suspended by a bracket, and closing that bracket closes nothing.
+    var l = layout()
+
+    assert_eq(l.line(4), Deeper)
+    l.open_bracket()
+    assert(!l.significant(), "suspended by the bracket")
+
+    assert_eq(l.close_bracket(), 0)
+    assert(l.significant(), "and resumed by closing it")
+    assert_eq(l.depth(), 1)
+end a_bracket_opened_inside_a_block_still_suspends_that_block
+
+@test
+blocks_and_brackets_nest_to_any_depth()
+    var l = layout()
+
+    l.open_bracket()
+    l.opens_block()
+    assert_eq(l.line(4), Deeper)
+
+    l.open_bracket()
+    assert(!l.significant(), "the inner bracket suspends the inner block")
+
+    l.opens_block()
+    assert_eq(l.line(8), Deeper)
+    assert_eq(l.depth(), 2)
+
+    // The inner `)` closes only what opened inside it.
+    assert_eq(l.close_bracket(), 1)
+    assert_eq(l.depth(), 1)
+
+    assert_eq(l.close_bracket(), 1)
+    assert_eq(l.depth(), 0)
+end blocks_and_brackets_nest_to_any_depth
+
+@test
+a_block_opener_with_nothing_indented_under_it_just_passes()
+    // `f(x match` and then a line at the same column. The flag is spent by the line either way, so
+    // the layout does not stay half-open; the grammar reports the missing arms.
+    var l = layout()
+
+    l.opens_block()
+    assert_eq(l.line(0), Same)
+    assert_eq(l.depth(), 0)
+end a_block_opener_with_nothing_indented_under_it_just_passes
+
+@test
+a_whole_pass_puts_a_block_inside_a_bracket_pair()
+    // `:` is this harness's block-opening token. The `D` lands before the line's end, because the
+    // `)` is what closed the block.
+    assert_eq(dents("f(:\n  a\n  b)\nc\n"), "NINDNN")
+
+@test
+brackets_with_no_block_opener_behave_exactly_as_before()
+    assert_eq(dents("f(\n  a\n)\n  b\n"), "NIND")
 
 @test
 tabs_advance_to_the_next_stop()
@@ -1189,3 +1286,18 @@ the_depth_is_what_is_open()
     assert_eq(l.line(0), Shallower(1))
     assert_eq(l.finish(), 0)
 end the_depth_is_what_is_open
+
+@test
+the_token_just_taken_can_be_read_back()
+    // `previous` answers where it was; this answers what it was. A block-structured grammar needs
+    // the second to ask "did a block just close?" when deciding whether a statement has ended.
+    var ts = lex_expr("1 + 2")
+
+    assert(ts.looked_back().is_none(), "nothing taken yet")
+
+    ts.advance()
+    assert_eq(ts.looked_back().unwrap().span, Span(0, 1))
+
+    ts.advance()
+    assert_eq(ts.looked_back().unwrap().span, Span(2, 3))
+end the_token_just_taken_can_be_read_back

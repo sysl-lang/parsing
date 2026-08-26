@@ -124,33 +124,90 @@ measure_indent(s: *Scanner, tab_width: usize) -> Indent
     Indent(columns, tabs, spaces)
 end measure_indent
 
+// One open block: where it begins, and how deep in brackets it was opened.
+//
+// **The bracket depth is what lets a block live inside a bracket pair.** A newline counts where the
+// bracket depth is the one the innermost block was opened at, so a block opened at the top level is
+// suspended by a `(` exactly as before, and a block opened *inside* that `(` has its own lines
+// counted until the bracket closes.
+struct Block
+    column: usize
+    brackets: usize
+end Block
+
 // The open blocks and the open brackets.
 struct Layout
-    // The column each open block begins at. It always holds at least one entry, the outermost level
-    // at column 0, so a line at the left margin closes everything and matches.
-    columns: Buf[usize]
+    // The open blocks, outermost first. It always holds at least one entry, the outermost level at
+    // column 0 and bracket depth 0, so a line at the left margin closes everything and matches.
+    blocks: Buf[Block]
 
-    // How many brackets are open. While it is above zero, line structure means nothing.
+    // How many brackets are open.
     brackets: usize
 
+    // Whether the grammar has said that the token it just emitted opens a block. See `opens_block`.
+    pending: bool
+
     // How many blocks are open, not counting the outermost.
-    depth(self) -> usize = self.columns.len() - 1
+    depth(self) -> usize = self.blocks.len() - 1
+
+    // The bracket depth the innermost open block was opened at.
+    private frame(self) -> usize = self.blocks.at(self.blocks.len() - 1).brackets
 
     // Whether a newline means anything where the cursor is.
     //
-    // A lexer asks this at every newline it meets: outside brackets the answer is yes and the line
-    // is handed to `line` below; inside them the newline is whitespace and is dropped.
-    significant(self) -> bool = self.brackets == 0
+    // A lexer asks this at every newline it meets: where the answer is yes the line is handed to
+    // `line` below, and where it is no the newline is whitespace and is dropped.
+    //
+    // **The test is not "no brackets are open" but "no brackets have opened since this block did".**
+    // Those agree everywhere a block sits at the top level, which is why the simpler rule served
+    // until something wanted a block as an argument.
+    significant(self) -> bool = self.pending || self.brackets == self.frame()
+
+    // The grammar has just emitted a token that opens a block, so the next line's indentation counts
+    // even inside brackets.
+    //
+    // **Which tokens those are is the grammar's to say and cannot be guessed here.** In sysl they
+    // are `match` and `->` and deliberately nothing else; in another language they might be `:` or
+    // `do` or `of`. What this module owns is the bookkeeping that makes such a block possible; what
+    // opens one is a fact about a grammar.
+    //
+    // Calling it outside brackets is harmless and is the ordinary case: a line that was going to
+    // open a block anyway opens one.
+    opens_block(*self)
+        self.pending = true
 
     // One more bracket open -- called by the lexer as it emits a `(`, `[` or `{`.
     open_bracket(*self)
         self.brackets += 1
 
-    // One fewer. A close with none open is ignored rather than counted below zero: the mismatch is
-    // the parser's error to report, and a lexer that had gone negative would then treat every
-    // newline for the rest of the file as insignificant.
-    close_bracket(*self)
-        if self.brackets > 0 then self.brackets -= 1
+    // One fewer, and **how many blocks that closed**.
+    //
+    // **A bracket closing closes every block opened inside it, and that is not optional.** Written
+    //
+    //     print(n match
+    //         0 -> "none"
+    //         1 -> "one")
+    //
+    // the `)` arrives while a block is open and on the same line as its last arm, so no line ending
+    // will ever close that block. The bracket has to, and the count comes back so that the lexer can
+    // emit its `DEDENT`s *before* the `)` it is about to emit.
+    //
+    // A close with none open is ignored rather than counted below zero: the mismatch is the parser's
+    // error to report, and a lexer that had gone negative would then treat every newline for the
+    // rest of the file as insignificant.
+    close_bracket(*self) -> usize
+        if self.brackets == 0 then return 0
+
+        self.brackets -= 1
+
+        var closed: usize = 0
+
+        while self.blocks.len() > 1 && self.frame() > self.brackets
+            self.blocks.pop()
+            closed += 1
+
+        closed
+    end close_bracket
 
     // What a line at this column does.
     //
@@ -160,18 +217,27 @@ struct Layout
     // one would be a surprise. The lexer knows what a comment is and this does not, which is why the
     // decision is left there.
     line(*self, column: usize) -> Dent
-        val top = self.columns.at(self.columns.len() - 1)
+        // Whatever this line turns out to be, the request to open a block has been answered by it.
+        // A `match` with nothing indented under it leaves the flag set no longer, and the grammar
+        // reports the missing arms.
+        val opening = self.pending
+
+        self.pending = false
+
+        val top = self.blocks.at(self.blocks.len() - 1).column
 
         if column > top then
-            self.columns.push(column)
+            // The block records the bracket depth it opened at, which is what makes its own lines
+            // count until that bracket closes.
+            self.blocks.push(Block(column, self.brackets))
             return Deeper
 
         if column == top then return Same
 
         var closed: usize = 0
 
-        while self.columns.len() > 1 && column < self.columns.at(self.columns.len() - 1)
-            self.columns.pop()
+        while self.blocks.len() > 1 && column < self.blocks.at(self.blocks.len() - 1).column
+            self.blocks.pop()
             closed += 1
 
         // **The levels below it have already been popped when this answers `Ragged`**, which is a
@@ -180,7 +246,7 @@ struct Layout
         // one error. Leaving the stack as it was would have made every following line ragged too.
         // The count of what was popped goes with the answer, so a lexer closes exactly what the
         // layout closed.
-        if column != self.columns.at(self.columns.len() - 1) then return Ragged(closed)
+        if column != self.blocks.at(self.blocks.len() - 1).column then return Ragged(closed)
 
         Shallower(closed)
     end line
@@ -191,10 +257,10 @@ struct Layout
     // nested body be the last line of the file with nothing after it. It leaves the layout at the
     // outermost level, so calling it twice answers zero the second time.
     finish(*self) -> usize
-        val n = self.columns.len() - 1
+        val n = self.blocks.len() - 1
 
-        while self.columns.len() > 1
-            self.columns.pop()
+        while self.blocks.len() > 1
+            self.blocks.pop()
 
         n
     end finish
@@ -202,8 +268,8 @@ end Layout
 
 // A layout at the outermost level with nothing open.
 layout() -> Layout
-    var columns: Buf[usize] = buf()
+    var blocks: Buf[Block] = buf()
 
-    columns.push(0)
-    Layout(columns, 0)
+    blocks.push(Block(0, 0))
+    Layout(blocks, 0, false)
 end layout

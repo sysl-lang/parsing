@@ -22,7 +22,7 @@ sh/sysl/parsing/
     scan.sysl           the byte and character cursor
     classes.sysl        the byte tests, as predicates and as 256-bit sets
     literal.sysl        numbers, quoted text, escapes
-    layout.sysl         indentation as structure
+    layout.sysl         indentation as structure, brackets included
     tokens.sysl         a value with its span, and a cursor over a lexed token list
     pratt.sysl          expressions, by binding power
     diag.sysl           diagnostics, carets, and a report that truncates
@@ -41,12 +41,12 @@ Name it in your project's `package.hocon` and `sysl build` fetches it:
 
 ```hocon
 dependencies {
-  parsing { git = "github.com/sysl-lang/parsing", version = "0.2.0" }
+  parsing { git = "github.com/sysl-lang/parsing", version = "0.3.0" }
 }
 ```
 
 The coordinate is an identity rather than a URL, so it carries no `https://`, and `version` is the
-tag `v0.2.0` here. It needs sysl 0.0.76 or newer, for the reason `package.hocon` gives.
+tag `v0.3.0` here. It needs sysl 0.0.76 or newer, for the reason `package.hocon` gives.
 
 Or build it into an artifact and compile against that, which needs no fetching:
 
@@ -130,6 +130,26 @@ Associativity is the difference between two numbers and nothing else — recurse
 power and it groups to the left, one below it and it groups to the right. Prefix operators, postfix
 operators, indexing, calls and the ternary all fall out of the callbacks being free to read what they
 like, so nothing about them is in the loop.
+
+## Indentation, brackets included
+
+A bracket suspends the off-side rule — `f(a,\n  b)` is one logical line, and every language with both
+features implements it by counting brackets in the lexer. What that costs, if it is the whole rule,
+is that a construct whose body is an indented block cannot be written as an argument.
+
+`layout` lets a grammar say otherwise. `opens_block` marks the token that opens one, and from there
+the block's own lines count until the bracket that surrounds it closes — at which point
+`close_bracket` answers how many blocks it closed, so the lexer emits their `DEDENT`s before the `)`:
+
+```
+print(n match
+    0 -> "none"
+    1 -> "one")
+```
+
+**Which tokens open a block is the grammar's to say, and is not guessable here.** sysl's are `match`
+and `->` and deliberately nothing else; another language's might be `:`, `do` or `of`. What this
+module owns is the bookkeeping that makes such a block possible.
 
 ## What is deliberately not here
 
