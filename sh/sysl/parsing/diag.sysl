@@ -261,6 +261,19 @@ struct Report
 
     len(self) -> usize = self.items.len()
 
+    // The one at an index, for a caller walking what it collected.
+    at(self, i: usize) -> Diagnostic = self.items.at(i)
+
+    // Take everything another report gathered.
+    //
+    // **What it is for is a grammar that parsed part of its input separately** -- the inside of an
+    // interpolated string, an embedded sub-language -- and now has two reports where the reader
+    // should see one. Reaching into `items` from outside is the alternative, and this says what that
+    // was for.
+    absorb(*self, other: Report)
+        for i in 0..<other.len()
+            self.items.push(other.at(i))
+
     is_empty(self) -> bool = self.items.is_empty()
 
     // Whether anything in it was an error, which is what decides an exit status -- a report of

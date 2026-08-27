@@ -23,7 +23,7 @@
 
 package {
   name    = "parsing"
-  version = "0.3.0"
+  version = "0.4.0"
 
   // **The oldest compiler this builds with, and it is a released one.** Three of 0.0.76's changes
   // are written into these files rather than merely available to them: a `match` standing as an
@@ -37,6 +37,28 @@ package {
   // living, so it is the first thing to notice what reading text is awkward to write.
   sysl = "0.0.76"
 }
+
+// **0.4.0 -- A LITERAL WITH EXPRESSIONS WRITTEN INTO IT, AND A WAY TO RE-READ ONE SLICE OF A FILE.**
+//
+// Three additions, all of them raised by slate wanting `s"a ${b} c"` and none of them incompatible.
+//
+// - **`read_interpolated`** reads a quoted literal that has holes in it, answering the chunks with
+//   their escapes decoded and the *extents* of the holes -- not what a hole says, which is the
+//   grammar's business. What it owns is the part every grammar gets wrong the same way: a `}` inside
+//   a nested bracket pair nests, and a `}` inside a *string* inside the hole is not a brace at all,
+//   so `s"${ f("}") }"` closes where a reader says it does. The opener and closer are the caller's,
+//   so `${`, `#{` and a bare `{` all work, and a doubled sigil is a literal one -- which is Scala's
+//   `$$` and Python's `{{` falling out of one line.
+// - **`sub_source`** answers a source holding one slice of another **at the offsets it already
+//   occupies**: everything outside becomes a space and a newline stays a newline. That is what lets
+//   a grammar re-read part of its input -- the inside of an interpolated string, an embedded
+//   sub-language, a macro body -- and still have every diagnostic in it name the line, column and
+//   character the reader is looking at. Lexing the slice on its own gives spans measured from the
+//   slice, which is a caret nobody can find.
+// - **`Report.at` and `Report.absorb`.** A grammar that parsed part of its input separately has two
+//   reports where the reader should see one. Reaching into `items` from outside was the alternative.
+//
+// **The seam is where it always is in this package: extents and text here, meaning in the grammar.**
 
 // **0.3.0 -- A BLOCK MAY OPEN INSIDE BRACKETS, WHICH IS THE FEATURE `layout` WAS MISSING.**
 //

@@ -465,6 +465,121 @@ read_quoted(s: *Scanner, quote: u8) -> Result[string, LitError]
     Ok(b.finish())
 end read_quoted
 
+// A quoted literal with expressions written into it, taken apart.
+//
+// **`chunks` is one longer than `holes`**, which is the whole shape: a run of literal text before
+// each hole and one after the last, any of which may be empty. `s"${a}${b}"` is three empty chunks
+// and two holes.
+struct Interpolation
+    // The literal text between the holes, escapes already decoded.
+    chunks: Buf[string]
+
+    // Where each hole's expression is, as offsets into the input the scanner is walking -- so the
+    // caller can hand the grammar a slice whose spans still point at the file the reader is looking
+    // at. See `sub_source`.
+    holes: Buf[Span]
+end Interpolation
+
+// A quoted literal that may have expressions written into it, with the cursor on the opening quote.
+//
+// **What is genuinely hard here is knowing which `}` closes a hole**, and it is why this is not four
+// lines in every grammar that wants it: a brace inside the hole nests, and a brace inside a *string*
+// inside the hole is not a brace at all. `s"${ f("}") }"` closes where a reader says it does, and a
+// scanner that counted braces alone would stop in the middle of the argument.
+//
+// **The opener and closer are the caller's**, because which sigil a language spends on this is the
+// language's business -- `${` in Scala, JavaScript and slate, `#{` in Ruby, a bare `{` in Python.
+// Nesting is counted on the last byte of `open` against `close`, so the pair must bracket.
+//
+// **What comes back is extents and text, not meaning.** This reader does not know what a hole says;
+// it knows where one starts and stops, which is the part every grammar gets wrong the same way.
+read_interpolated(s: *Scanner, quote: u8, open: []const u8, close: u8) -> Result[Interpolation, LitError]
+    val start = s.offset
+
+    if !s.accept(quote) then return Err(NoQuote(one_at(start)))
+
+    if open.len == 0 then return Err(NoQuote(one_at(start)))
+
+    val nest = open[open.len - 1]
+    var chunks: Buf[string] = buf()
+    var holes: Buf[Span] = buf()
+    var b = str_builder()
+
+    loop
+        s.peek() match
+            None -> return Err(Unterminated(s.span_from(start)))
+            Some(c) ->
+                if c == quote then
+                    s.bump()
+                    break
+                elif c == u8('\\') then
+                    read_escape(s) match
+                        Err(e) -> return Err(e)
+                        Ok(ch) -> b.push_char(ch)
+                elif open.len > 0 && c == open[0] && s.peek_at(1) == Some(open[0]) then
+                    // **A doubled sigil is the sigil**, which is the only way to write one where a
+                    // hole would otherwise open -- `$$` for `${`, and `{{` for a bare `{`, which is
+                    // Scala's rule and Python's respectively falling out of the same line.
+                    s.bump()
+                    s.bump()
+                    b.push_char(char(u32(open[0])))
+                elif s.starts_with(open) then
+                    for _ in 0..<open.len
+                        s.bump()
+
+                    val from = s.offset
+
+                    read_hole(s, nest, close, start)?
+                    holes.push(Span(from, s.offset - 1))
+                    chunks.push(b.finish())
+                    b = str_builder()
+                else
+                    s.next_char() match
+                        Some(ch) -> b.push_char(ch)
+                        None -> return Err(Unterminated(s.span_from(start)))
+
+    chunks.push(b.finish())
+    Ok(Interpolation(chunks, holes))
+end read_interpolated
+
+// Step over one hole, leaving the cursor just past the byte that closed it.
+//
+// The depth is what a nested bracket needs and the inner loop is what a nested string needs; without
+// the second, a quote in the hole would hide every bracket after it.
+private read_hole(s: *Scanner, nest: u8, close: u8, start: usize) -> Result[unit, LitError]
+    var depth: usize = 1
+
+    loop
+        s.peek() match
+            None -> return Err(Unterminated(s.span_from(start)))
+            Some(c) ->
+                if c == nest then
+                    depth += 1
+                    s.bump()
+                elif c == close then
+                    depth -= 1
+                    s.bump()
+
+                    if depth == 0 then return Ok(())
+                elif c == u8('"') || c == u8('\'') then
+                    // A string inside the hole, whose brackets are its own. Its escapes are stepped
+                    // over rather than read, since what is wanted is where it ends.
+                    val opened = c
+
+                    s.bump()
+
+                    loop
+                        s.peek() match
+                            None -> return Err(Unterminated(s.span_from(start)))
+                            Some(q) ->
+                                s.bump()
+
+                                if q == u8('\\') then s.bump()
+                                elif q == opened then break
+                else
+                    s.bump()
+end read_hole
+
 // A character literal: one character between two quotes, escapes included.
 //
 // It is a reader of its own rather than `read_quoted` with a length check, because what is wanted

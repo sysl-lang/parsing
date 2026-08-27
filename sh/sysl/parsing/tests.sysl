@@ -1301,3 +1301,132 @@ the_token_just_taken_can_be_read_back()
     ts.advance()
     assert_eq(ts.looked_back().unwrap().span, Span(2, 3))
 end the_token_just_taken_can_be_read_back
+
+// -- a literal with expressions written into it ------------------------------------------------
+
+private interp(text: string) -> Result[Interpolation, LitError]
+    var s = scanner_of(text)
+
+    read_interpolated(&s, u8('"'), "${".bytes, u8('}'))
+
+@test
+an_interpolated_literal_answers_its_chunks_and_its_holes()
+    val r = interp("\"a ${x} b\"").unwrap()
+
+    assert_eq(r.chunks.len(), 2)
+    assert_eq(r.chunks.at(0), "a ")
+    assert_eq(r.chunks.at(1), " b")
+    assert_eq(r.holes.len(), 1)
+
+    // The span is the hole's contents, so a caller may hand exactly that to its grammar.
+    assert_eq(r.holes.at(0), Span(5, 6))
+end an_interpolated_literal_answers_its_chunks_and_its_holes
+
+@test
+there_is_one_more_chunk_than_there_are_holes()
+    // **Even where the chunks are empty**, which is what keeps the caller's walk a single rule
+    // rather than a special case at each end.
+    val r = interp("\"${a}${b}\"").unwrap()
+
+    assert_eq(r.chunks.len(), 3)
+    assert_eq(r.chunks.at(0), "")
+    assert_eq(r.chunks.at(1), "")
+    assert_eq(r.chunks.at(2), "")
+    assert_eq(r.holes.len(), 2)
+
+    val plain = interp("\"nothing\"").unwrap()
+
+    assert_eq(plain.chunks.len(), 1)
+    assert_eq(plain.chunks.at(0), "nothing")
+    assert(plain.holes.is_empty())
+end there_is_one_more_chunk_than_there_are_holes
+
+@test
+a_chunks_escapes_are_read_the_way_a_quoted_literals_are()
+    val r = interp("\"a\\tb ${x}\\n\"").unwrap()
+
+    assert_eq(r.chunks.at(0), "a\tb ")
+    assert_eq(r.chunks.at(1), "\n")
+
+    // **A doubled sigil is a literal one**, which is the only way to write a `${` where a hole would
+    // otherwise open. Nothing is escaped with a backslash here, `$` not being in anyone's escape set.
+    val e = interp("\"a $${x} b\"").unwrap()
+
+    assert(e.holes.is_empty())
+    assert_eq(e.chunks.len(), 1)
+    assert_eq(e.chunks.at(0), "a ${x} b")
+end a_chunks_escapes_are_read_the_way_a_quoted_literals_are
+
+@test
+a_brace_inside_a_hole_nests_and_one_inside_a_string_does_not()
+    // **The whole reason this is not four lines.** A scanner counting braces alone stops in the
+    // middle of the argument; one that does not follow a nested string stops at the wrong `}`.
+    val nested = interp("\"${ { a: 1 } } tail\"").unwrap()
+
+    assert_eq(nested.chunks.at(1), " tail")
+
+    val quoted = interp("\"${ f(\"}\") } tail\"").unwrap()
+
+    assert_eq(quoted.chunks.at(1), " tail")
+    assert_eq(quoted.holes.len(), 1)
+
+    // A quote of either kind, since a grammar may spend both.
+    val single = interp("\"${ f('}') } tail\"").unwrap()
+
+    assert_eq(single.chunks.at(1), " tail")
+end a_brace_inside_a_hole_nests_and_one_inside_a_string_does_not
+
+@test
+a_literal_or_a_hole_that_never_closes_is_refused()
+    assert(interp("\"a ${x} b").is_err(), "the literal runs out")
+    assert(interp("\"a ${x").is_err(), "the hole runs out")
+    assert(interp("\"a ${ \"unclosed").is_err(), "a string inside the hole runs out")
+
+@test
+the_opener_and_the_closer_are_the_callers()
+    var s = scanner_of("\"a #{x} b\"")
+    val r = read_interpolated(&s, u8('"'), "#{".bytes, u8('}')).unwrap()
+
+    assert_eq(r.chunks.at(0), "a ")
+    assert_eq(r.holes.len(), 1)
+end the_opener_and_the_closer_are_the_callers
+
+// -- re-reading one slice of a source -----------------------------------------------------------
+
+@test
+a_sub_source_keeps_every_offset_line_and_column()
+    // **The reason it is not a substring.** A grammar re-reading part of its input gets spans
+    // measured from the slice, so every diagnostic in it names a place nobody can find.
+    val src = source_of("t", "one\ntwo\nthree\n")
+    val sub = sub_source(src, Span(8, 13))
+
+    assert_eq(sub.bytes.len, src.bytes.len)
+    assert_eq(sub.text(Span(8, 13)), "three".bytes)
+
+    // The line the slice is on is the line it was on, and the column too -- which is what keeps a
+    // caret under the character the reader is looking at.
+    assert_eq(src.locate(8), sub.locate(8))
+    assert_eq(sub.locate(8).line, 3)
+
+    // Everything outside is blank, so nothing outside lexes.
+    assert_eq(sub.text(Span(0, 3)), "   ".bytes)
+end a_sub_source_keeps_every_offset_line_and_column
+
+// -- gathering what another report collected ----------------------------------------------------
+
+@test
+a_report_takes_what_another_one_gathered()
+    var a = report()
+    var b = report()
+
+    a.add(error(Span(0, 1), "first"))
+    b.add(error(Span(2, 3), "second"))
+    b.add(warning(Span(4, 5), "third"))
+    a.absorb(b)
+
+    assert_eq(a.len(), 3)
+    assert_eq(a.at(1).message, "second")
+
+    // The one it took from is untouched, so a caller may read it afterwards.
+    assert_eq(b.len(), 2)
+end a_report_takes_what_another_one_gathered

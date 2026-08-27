@@ -179,3 +179,27 @@ end source
 // It exists because `string` does not coerce to `[]const u8` -- `.bytes` is the spelling, and having
 // to know that at the first line of every program using this package is a bad first impression.
 source_of(name: string, text: string) -> Source = source(name, text.bytes)
+
+// One slice of a source, at the offsets it already occupies.
+//
+// **Everything outside the slice becomes a space, and a newline stays a newline.** That is the whole
+// trick and the reason it is worth a function: a grammar that has to re-read part of a file -- the
+// inside of an interpolated string, an embedded sub-language, a macro's body -- otherwise lexes text
+// whose spans are measured from the slice, so every diagnostic in it names a line and column nobody
+// can find. Keeping the newlines is what makes the *line* right, and padding the rest with spaces is
+// what makes the column and the offset right.
+//
+// It costs a copy of the whole input, which for the sizes a hand-written front end deals with is not
+// worth avoiding -- and buys a caret under the character the reader is looking at.
+sub_source(src: Source, keep: Span) -> Source
+    var out: Buf[u8] = buf()
+
+    for i in 0..<src.bytes.len
+        val c = src.bytes[i]
+
+        if i >= keep.start && i < keep.end then out.push(c)
+        elif c == u8('\n') then out.push(c)
+        else out.push(u8(' '))
+
+    source(src.name, out.view())
+end sub_source
