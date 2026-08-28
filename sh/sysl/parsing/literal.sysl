@@ -2,7 +2,7 @@ module sh.sysl.parsing
 
 import sysl.buf.{Buf, buf}
 import sysl.slices.contains
-import sysl.text.{Ascii, char_from_u32, parse_real, str_builder}
+import sysl.text.{Ascii, char_from_u32, from_utf8_unchecked, parse_real, str_builder}
 
 // Numbers and quoted text, read off a `Scanner`.
 //
@@ -360,6 +360,14 @@ read_escape(s: *Scanner) -> Result[char, LitError]
                     Err(e) -> Err(e)
             elif c == u8('u') then
                 read_u_escape(s, start)
+            elif c == u8('U') then
+                // **C's other universal character name, and the one this set was missing.** The
+                // comment above says these are the C family's escapes; C99 has both `\uHHHH` and
+                // `\UHHHHHHHH`, and Python, Rust and TOML all write the eight-digit form for a
+                // codepoint past the basic plane. Its absence made `\U0001F600` read as `\U` --
+                // which was refused as an unknown escape, so nothing was silently wrong; it simply
+                // could not be written.
+                read_hex_escape(s, 8, start)
             else
                 // The offending byte has been consumed, so the span covers the backslash and it
                 // together -- `\q` underlined, rather than a caret under the backslash alone.
@@ -408,6 +416,23 @@ private read_u_escape(s: *Scanner, start: usize) -> Result[char, LitError]
             else
                 to_char(s, hi, start)
 end read_u_escape
+
+/** Exactly `n` hexadecimal digits, and the character they name, with the cursor on the first digit.
+ *
+ * **This is `read_escape`'s own machinery, made public because a grammar's escape set is the
+ * grammar's business.** A language whose escapes are not C's cannot call `read_escape` at all -- TOML
+ * has nine where this file knows sixteen, and JSON has eight -- so it checks the byte after the
+ * backslash itself and then needs exactly this: `n` digits, and the refusal of anything that is not a
+ * character. Written by hand at each such grammar it is four lines and one of them is the surrogate
+ * test, which is the line that gets left out.
+ *
+ * `start` is where the escape began, so that a bad one is underlined from its backslash rather than
+ * from the digit that gave it away.
+ *
+ *     if s.accept_seq("\\u".bytes) then read_hex_escape(s, 4, at)
+ */
+read_hex_escape(s: *Scanner, n: int, start: usize) -> Result[char, LitError] =
+    to_char(s, read_hex(s, n, start)?, start)
 
 // Exactly `n` hexadecimal digits, which is what the fixed-width escapes take -- a short run is the
 // input's mistake and not a shorter number.
@@ -611,3 +636,99 @@ read_char_literal(s: *Scanner, quote: u8) -> Result[char, LitError]
 
     Ok(c)
 end read_char_literal
+
+/** A quoted literal with **no escapes at all**, with the cursor on the opening quote: what is between
+ * the quotes is the text, backslash included.
+ *
+ * `read_quoted` is the other half of this pair and decodes escapes; which of the two a quote means is
+ * the grammar's business and not this file's. Nearly every language that has one form has the other
+ * -- TOML's `'…'` beside its `"…"`, Rust's `r"…"`, Python's `r'…'`, PowerShell's single quotes -- and
+ * the raw one is what a Windows path and a regular expression are written in.
+ *
+ * **A newline inside is allowed and is not this reader's decision**, exactly as it is not
+ * `read_quoted`'s: a grammar that ends a string at the end of the line tests for one itself. What is
+ * refused here is only the input running out.
+ *
+ * Nothing is copied unless it has to be: the text between the quotes is a slice of the input, and
+ * the `string` is made from it once.
+ */
+read_raw(s: *Scanner, quote: u8) -> Result[string, LitError]
+    val start = s.offset
+
+    if !s.accept(quote) then return Err(NoQuote(one_at(start)))
+
+    val from = s.offset
+
+    loop
+        s.peek() match
+            None -> return Err(Unterminated(s.span_from(start)))
+            Some(c) ->
+                if c == quote then break
+
+                s.bump()
+
+    val text = from_utf8_unchecked(s.src[from..<s.offset])
+
+    s.bump()
+    Ok(text)
+end read_raw
+
+/** What a run of the delimiter character means inside a **fenced** literal -- one written between
+ * three of the same character, as `"""…"""` and `'''…'''` are.
+ *
+ * **The rule that makes this worth a reader is that the delimiter may appear in the text right up
+ * against the fence.** `"""he said """"` is `he said "`, because the last three of the four quotes
+ * close it and the first belongs to the string. Every language with a fenced literal has this
+ * problem and most implementations get it wrong in the same direction: they stop at the first three
+ * they see, and a string ending in the quote character comes out one character short.
+ */
+enum Fence
+    /** Fewer than three of it: ordinary text, this many. */
+    Text(n: usize)
+
+    /** The literal ends here, with `keep` of them belonging to its text. */
+    Ends(keep: usize)
+
+    /** Six or more, which is a closing fence with nothing to close it against. */
+    TooMany
+end Fence
+
+// Two of the three variants carry a count, so equality is not the one a bare enum gets by rule.
+// Worth having rather than incidental: a grammar written against this compares the answer, and a
+// test that could not would have to take it apart.
+impl Eq for Fence
+    eq(self, rhs: Fence) -> bool = self match
+        Text(a) -> rhs match
+            Text(b) -> a == b
+            _ -> false
+        Ends(a) -> rhs match
+            Ends(b) -> a == b
+            _ -> false
+        TooMany -> rhs match
+            TooMany -> true
+            _ -> false
+
+impl Display for Fence
+    display(self, out: *Writer, fmt: FormatSpec)
+        val text = self match
+            Text(n) -> s"Text($n)"
+            Ends(keep) -> s"Ends($keep)"
+            TooMany -> "TooMany"
+
+        display_str(text, out, fmt)
+
+/** The run of `q` at the cursor, read as a `Fence`. **Nothing is consumed** -- what to do about the
+ * answer is the grammar's, and only it knows whether the text goes into a builder or is sliced.
+ *
+ *     fence_run(s, q) match
+ *         Text(n) -> ...           // push n of them, then skip n
+ *         Ends(keep) -> ...        // push keep of them, then skip keep + 3
+ *         TooMany -> ...
+ */
+fence_run(s: *Scanner, q: u8) -> Fence
+    var run: usize = 0
+
+    loop
+        if s.peek_at(run) == Some(q) then run += 1 else break
+
+    if run < 3 then Text(run) elif run > 5 then TooMany else Ends(run - 3)

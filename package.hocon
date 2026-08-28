@@ -13,7 +13,7 @@
 // This is the block a *consumer* writes to reach this package:
 //
 //     dependencies {
-//       parsing { git = "github.com/sysl-lang/parsing", version = "0.2.1" }
+//       parsing { git = "github.com/sysl-lang/parsing", version = "0.5.0" }
 //     }
 //
 // The coordinate names the package, `parsing`; the module a program imports is `sh.sysl.parsing`.
@@ -23,7 +23,7 @@
 
 package {
   name    = "parsing"
-  version = "0.4.0"
+  version = "0.5.0"
 
   // **The oldest compiler this builds with, and it is a released one.** Three of 0.0.76's changes
   // are written into these files rather than merely available to them: a `match` standing as an
@@ -38,6 +38,24 @@ package {
   sysl = "0.0.76"
 }
 
+// **0.5.0 -- THE READERS A GRAMMAR NEEDS WHEN ITS LITERALS ARE NOT C'S.**
+//
+// Four additions, all raised by writing `sysl-lang/toml` and none of them incompatible. The theme is
+// the one this package has had from the start: a grammar whose escapes or quotes differ from the C
+// family's could not call `read_escape` or `read_quoted` at all, so it wrote the fiddly part itself
+// -- and the fiddly part is where the surrogate test and the delimiter run get left out.
+//
+// - **`read_hex_escape`** is `read_escape`'s own machinery, made public: exactly `n` hexadecimal
+//   digits, and the character they name, refusing a surrogate and anything past U+10FFFF.
+// - **`read_raw`** is `read_quoted` with no escapes at all -- TOML's `'…'`, Rust's `r"…"`, a Windows
+//   path, a regular expression.
+// - **`fence_run`** answers what a run of the delimiter means inside a `"""…"""` literal, which is
+//   the rule every implementation gets wrong in the same direction: up to two of the delimiter may
+//   belong to the text, so `"""he said """"` is `he said "`. It consumes nothing.
+// - **`\U`** in `read_escape`, which is C's other universal character name and was the one escape
+//   missing from a set this package says is the C family's. Nothing was silently wrong -- it was
+//   refused as unknown -- it simply could not be written.
+//
 // **0.4.0 -- A LITERAL WITH EXPRESSIONS WRITTEN INTO IT, AND A WAY TO RE-READ ONE SLICE OF A FILE.**
 //
 // Three additions, all of them raised by slate wanting `s"a ${b} c"` and none of them incompatible.

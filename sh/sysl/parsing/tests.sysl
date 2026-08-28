@@ -1430,3 +1430,97 @@ a_report_takes_what_another_one_gathered()
     // The one it took from is untouched, so a caller may read it afterwards.
     assert_eq(b.len(), 2)
 end a_report_takes_what_another_one_gathered
+
+// The four readers a grammar reaches for when its literals are not C's, added at 0.5.0 and driven
+// out of writing `sysl-lang/toml`. Each one is a shape rather than a policy: what a run of
+// delimiters *means*, what `n` hexadecimal digits *name*. Whether a language has the form at all is
+// still the language's answer.
+
+// `\U` is C's other universal character name and was the one escape missing from a set this file
+// says is the C family's. Nothing was silently wrong before -- `\U0001F600` was refused as an
+// unknown escape -- it simply could not be written.
+@test
+the_eight_digit_universal_character_name()
+    assert_eq(quoted("\"\\U0001F600\"").unwrap(), "😀")
+    assert_eq(quoted("\"\\U00000041\"").unwrap(), "A")
+
+    // Seven digits is not the escape, and neither is a codepoint past the end of the space.
+    assert(quoted("\"\\U000041\"").is_err(), "too few digits")
+    assert(quoted("\"\\U00110000\"").is_err(), "past U+10FFFF")
+
+// The machinery `read_escape` uses, made public so that a grammar whose escapes are not C's can read
+// its own -- which is every grammar with a fixed-width hexadecimal escape, since the surrogate test
+// is the line a hand-written version leaves out.
+@test
+a_fixed_width_hexadecimal_escape_is_readable_on_its_own()
+    var s = scanner_of("0041")
+
+    assert_eq(read_hex_escape(&s, 4, 0).unwrap(), 'A')
+    assert_eq(s.offset, 4)
+
+    var bad = scanner_of("d800")
+
+    assert(read_hex_escape(&bad, 4, 0).is_err(), "a surrogate is not a character")
+
+    var short = scanner_of("41")
+
+    assert(read_hex_escape(&short, 4, 0).is_err(), "the input ran out")
+
+// A raw literal is what a Windows path and a regular expression are written in, and its whole rule is
+// that the backslash is a backslash.
+@test
+a_raw_literal_decodes_nothing()
+    var s = scanner_of("'C:\\Users\\n'")
+
+    assert_eq(read_raw(&s, u8('\'')).unwrap(), "C:\\Users\\n")
+    assert(s.at_end())
+
+    var empty = scanner_of("''")
+
+    assert_eq(read_raw(&empty, u8('\'')).unwrap(), "")
+
+    var open = scanner_of("'never closed")
+
+    assert(read_raw(&open, u8('\'')).is_err(), "the input ran out")
+
+    // The quote is the caller's, exactly as `read_quoted`'s is.
+    var back = scanner_of("`raw`")
+
+    assert_eq(read_raw(&back, u8('`')).unwrap(), "raw")
+
+// The rule every fenced-literal implementation gets wrong in the same direction: it stops at the
+// first three delimiters it sees, and a string ending in the delimiter comes out short.
+@test
+a_fence_lets_two_delimiters_belong_to_the_text()
+    var one = scanner_of("\"x")
+
+    assert_eq(fence_run(&one, u8('"')), Text(1))
+
+    var two = scanner_of("\"\"x")
+
+    assert_eq(fence_run(&two, u8('"')), Text(2))
+
+    var three = scanner_of("\"\"\"")
+
+    assert_eq(fence_run(&three, u8('"')), Ends(0))
+
+    // `"""he said """"` is `he said "`: four quotes are one of text and then the fence.
+    var four = scanner_of("\"\"\"\"")
+
+    assert_eq(fence_run(&four, u8('"')), Ends(1))
+
+    var five = scanner_of("\"\"\"\"\"")
+
+    assert_eq(fence_run(&five, u8('"')), Ends(2))
+
+    var six = scanner_of("\"\"\"\"\"\"")
+
+    assert_eq(fence_run(&six, u8('"')), TooMany)
+
+// **Nothing is consumed**, which is what lets the caller decide where the text goes.
+@test
+reading_a_fence_moves_no_cursor()
+    var s = scanner_of("\"\"\"\"")
+
+    fence_run(&s, u8('"'))
+    assert_eq(s.offset, 0)
