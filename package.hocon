@@ -13,7 +13,7 @@
 // This is the block a *consumer* writes to reach this package:
 //
 //     dependencies {
-//       parsing { git = "github.com/sysl-lang/parsing", version = "0.5.0" }
+//       parsing { git = "github.com/sysl-lang/parsing", version = "0.6.0" }
 //     }
 //
 // The coordinate names the package, `parsing`; the module a program imports is `sh.sysl.parsing`.
@@ -23,7 +23,7 @@
 
 package {
   name    = "parsing"
-  version = "0.5.0"
+  version = "0.6.0"
 
   // **The oldest compiler this builds with, and it is a released one.** Three of 0.0.76's changes
   // are written into these files rather than merely available to them: a `match` standing as an
@@ -37,6 +37,24 @@ package {
   // living, so it is the first thing to notice what reading text is awkward to write.
   sysl = "0.0.76"
 }
+
+// **0.6.0 -- A BARE NAME AFTER THE SIGIL, WHICH ONLY THIS READER CAN OFFER.**
+//
+// `read_interpolated_named` is `read_interpolated` plus Scala's short form: `s"$w by $h"` beside
+// `s"${w}"`. Raised by writing `slate`, and added here rather than there because **the caller cannot
+// do it.** Post-processing what the old reader answers means reading chunks whose escapes are
+// already decoded, and `$$w` decodes to exactly the `$w` a bare hole is written as -- the one byte
+// that separates them is consumed before the caller sees anything.
+//
+// - **A separate entry point, not a flag**, because switching it on changes what an existing literal
+//   MEANS: every `$` before a letter becomes a hole. A grammar opts into that for its own literals;
+//   a library may not decide it for one that has shipped. `read_interpolated` is unchanged and a
+//   test pins that its literals still read `$w` as text.
+// - **Identifier-only, as Scala's is.** A bare hole runs to the end of one name, so `$point.x` is
+//   `point` and then literal `.x`; `${point.x}` says the other thing. Where a hole stops stays a
+//   question with one answer.
+// - **The predicates are the caller's**, the same two `read_ident` takes, and the sigil is whichever
+//   byte opens the caller's `open` -- so `#{` gives `#name` for free.
 
 // **0.5.0 -- THE READERS A GRAMMAR NEEDS WHEN ITS LITERALS ARE NOT C'S.**
 //

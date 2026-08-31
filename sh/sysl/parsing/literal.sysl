@@ -518,7 +518,42 @@ end Interpolation
 //
 // **What comes back is extents and text, not meaning.** This reader does not know what a hole says;
 // it knows where one starts and stops, which is the part every grammar gets wrong the same way.
-read_interpolated(s: *Scanner, quote: u8, open: []const u8, close: u8) -> Result[Interpolation, LitError]
+read_interpolated(s: *Scanner, quote: u8, open: []const u8, close: u8) -> Result[Interpolation, LitError] =
+    read_interp(s, quote, open, close, no_byte, no_byte)
+
+// The same, and a bare name after the sigil opens a hole too -- `s"$w by $h"` beside `s"${w}"`.
+//
+// **THE TWO FORMS CANNOT BE TOLD APART ONCE THIS HAS RUN, WHICH IS WHY IT IS HERE AND NOT IN THE
+// CALLER.** A grammar wanting the short form by post-processing what `read_interpolated` answers
+// would be reading chunks whose escapes are already decoded -- and `$$w` decodes to exactly the `$w`
+// that a bare hole is written as. The byte that tells them apart is consumed before the caller sees
+// anything, so the decision has to be made here, while the source is still in front of it.
+//
+// **A separate entry point rather than a flag on the other, because turning it on changes what an
+// existing literal MEANS**: every `$` that happens to precede a letter becomes a hole. A grammar opts
+// into that for its own literals; it is not a thing a library may decide on behalf of one that has
+// already shipped.
+//
+// **Identifier-only, as Scala's is.** A bare hole runs to the end of one name and no further, so
+// `$point.x` interpolates `point` and then reads `.x` as text -- `${point.x}` is how a program says
+// the other thing. Anything cleverer makes where the hole stops a question the reader has to work
+// out, which is the whole failure this reader exists to avoid.
+//
+// **The predicates are the caller's**, for the reason the opener is: what may begin and continue a
+// name is the grammar's business, and these are the two `read_ident` takes.
+read_interpolated_named(s: *Scanner, quote: u8, open: []const u8, close: u8, start: u8 -> bool, cont: u8 -> bool) -> Result[Interpolation, LitError] =
+    read_interp(s, quote, open, close, start, cont)
+
+// A predicate no byte satisfies, which is what leaves the bare form switched off.
+private no_byte(c: u8) -> bool = false
+
+// Whether what stands after the sigil begins a bare name.
+private opens_bare(s: *Scanner, start: u8 -> bool) -> bool =
+    s.peek_at(1) match
+        Some(c) -> start(c)
+        None -> false
+
+private read_interp(s: *Scanner, quote: u8, open: []const u8, close: u8, bare_start: u8 -> bool, bare_cont: u8 -> bool) -> Result[Interpolation, LitError]
     val start = s.offset
 
     if !s.accept(quote) then return Err(NoQuote(one_at(start)))
@@ -558,6 +593,23 @@ read_interpolated(s: *Scanner, quote: u8, open: []const u8, close: u8) -> Result
                     holes.push(Span(from, s.offset - 1))
                     chunks.push(b.finish())
                     b = str_builder()
+                elif c == open[0] && opens_bare(s, bare_start) then
+                    // **The bare form, and it needs none of what the braced one needs**: a name has
+                    // no nesting and no string inside it, so where it stops is the first byte that
+                    // cannot continue one. That is why this is four lines beside `read_hole`'s
+                    // thirty, and why it is safe to offer at all.
+                    s.bump()
+
+                    s.read_ident(bare_start, bare_cont) match
+                        Some(at) -> holes.push(at)
+
+                        // Unreachable: `opens_bare` has already seen a byte `bare_start` accepts, so
+                        // the identifier is at least one byte long. Answered rather than asserted,
+                        // this reader having no business faulting on its caller's behalf.
+                        None -> return Err(Unterminated(s.span_from(start)))
+
+                    chunks.push(b.finish())
+                    b = str_builder()
                 else
                     s.next_char() match
                         Some(ch) -> b.push_char(ch)
@@ -565,7 +617,7 @@ read_interpolated(s: *Scanner, quote: u8, open: []const u8, close: u8) -> Result
 
     chunks.push(b.finish())
     Ok(Interpolation(chunks, holes))
-end read_interpolated
+end read_interp
 
 // Step over one hole, leaving the cursor just past the byte that closed it.
 //

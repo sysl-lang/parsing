@@ -1309,6 +1309,12 @@ private interp(text: string) -> Result[Interpolation, LitError]
 
     read_interpolated(&s, u8('"'), "${".bytes, u8('}'))
 
+private named(text: string) -> Result[Interpolation, LitError]
+    var s = scanner_of(text)
+
+    read_interpolated_named(&s, u8('"'), "${".bytes, u8('}'), is_ident_start, is_ident_cont)
+
+
 @test
 an_interpolated_literal_answers_its_chunks_and_its_holes()
     val r = interp("\"a ${x} b\"").unwrap()
@@ -1390,6 +1396,90 @@ the_opener_and_the_closer_are_the_callers()
     assert_eq(r.chunks.at(0), "a ")
     assert_eq(r.holes.len(), 1)
 end the_opener_and_the_closer_are_the_callers
+
+@test
+a_bare_name_after_the_sigil_is_a_hole_too()
+    // Scala's short form, and the one a program reaches for when the hole is a single name.
+
+    val r = named("\"$w by $h\"").unwrap()
+
+    assert_eq(r.chunks.len(), 3)
+    assert_eq(r.chunks.at(0), "")
+    assert_eq(r.chunks.at(1), " by ")
+    assert_eq(r.chunks.at(2), "")
+    assert_eq(r.holes.len(), 2)
+
+@test
+a_bare_hole_spans_exactly_its_name()
+    // The span is what the caller re-reads to get the expression, so it has to cover the name and
+    // neither the sigil before it nor the byte that ended it.
+
+    val r = named("\"a $wide b\"").unwrap()
+
+    assert_eq(r.holes.at(0), Span(4, 8))
+
+@test
+A_DOUBLED_SIGIL_STAYS_A_SIGIL_WHEN_BARE_NAMES_ARE_ON()
+    // **The case the whole entry point exists for.** `$$w` is a literal `$` and then a `w`, and `$w`
+    // is a hole -- they decode to the same three characters, so a caller handed only the chunks
+    // could never tell them apart. Getting this wrong is silent, which is why it is pinned.
+
+    val doubled = named("\"$$w\"").unwrap()
+
+    assert_eq(doubled.holes.len(), 0)
+    assert_eq(doubled.chunks.at(0), "$w")
+
+    val bare = named("\"$w\"").unwrap()
+
+    assert_eq(bare.holes.len(), 1)
+
+@test
+a_bare_name_stops_at_the_first_byte_that_cannot_continue_one()
+    // Identifier-only, so `$point.x` is `point` and then literal `.x`. `${point.x}` says the other
+    // thing, and a reader never has to work out where the hole ended.
+
+    val r = named("\"$point.x\"").unwrap()
+
+    assert_eq(r.holes.len(), 1)
+    assert_eq(r.chunks.at(1), ".x")
+
+@test
+BOTH_FORMS_STAND_IN_ONE_LITERAL()
+    val r = named("\"$a and ${b + c}\"").unwrap()
+
+    assert_eq(r.holes.len(), 2)
+    assert_eq(r.chunks.at(1), " and ")
+
+@test
+A_SIGIL_THAT_BEGINS_NO_NAME_IS_ORDINARY_TEXT()
+    // **A trailing `$`, and a `$` before a digit or a space.** None of them opens a hole, so each is
+    // the character it looks like -- which is what keeps a price or a shell snippet readable.
+
+    assert_eq(named("\"costs 5$\"").unwrap().chunks.at(0), "costs 5$")
+    assert_eq(named("\"$ x\"").unwrap().chunks.at(0), "$ x")
+    assert_eq(named("\"$1\"").unwrap().chunks.at(0), "$1")
+
+@test
+THE_BARE_FORM_IS_OFF_FOR_read_interpolated()
+    // **The compatibility guarantee, asserted rather than assumed.** Every grammar already using
+    // this reader keeps the literals it has: a `$` before a letter is text, as it always was.
+
+    val r = interp("\"$w by $h\"").unwrap()
+
+    assert_eq(r.holes.len(), 0)
+    assert_eq(r.chunks.at(0), "$w by $h")
+
+@test
+the_bare_sigil_follows_the_opener_the_caller_gave()
+    // `#{` makes `#name` the short form, for the same reason it makes `#{...}` the long one -- the
+    // sigil is one decision, not two.
+
+    var s = scanner_of("\"a #x b\"")
+    val r = read_interpolated_named(&s, u8('"'), "#{".bytes, u8('}'), is_ident_start, is_ident_cont).unwrap()
+
+    assert_eq(r.holes.len(), 1)
+    assert_eq(r.chunks.at(0), "a ")
+    assert_eq(r.chunks.at(1), " b")
 
 // -- re-reading one slice of a source -----------------------------------------------------------
 
