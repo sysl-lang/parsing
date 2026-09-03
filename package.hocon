@@ -13,7 +13,7 @@
 // This is the block a *consumer* writes to reach this package:
 //
 //     dependencies {
-//       parsing { git = "github.com/sysl-lang/parsing", version = "0.7.0" }
+//       parsing { git = "github.com/sysl-lang/parsing", version = "0.8.0" }
 //     }
 //
 // The coordinate names the package, `parsing`; the module a program imports is `sh.sysl.parsing`.
@@ -23,7 +23,7 @@
 
 package {
   name    = "parsing"
-  version = "0.7.0"
+  version = "0.8.0"
 
   // **The oldest compiler this builds with, and it is a released one.** Three of 0.0.76's changes
   // are written into these files rather than merely available to them: a `match` standing as an
@@ -38,6 +38,39 @@ package {
   sysl = "0.0.76"
 }
 
+// **0.8.0 -- THE TWO PIECES OF BOOKKEEPING A PARSER KEEPS BESIDE ITS CURSOR.** `ScopedNames` in
+// `scope.sysl`, and `names_end` with `kind_at` in `tokens.sysl`. Both came OUT of
+// `slate-language/slate`, where they were written for that language's type parameters -- and neither
+// has anything to do with types, which is what made them worth moving.
+//
+// - **`ScopedNames` is the names a parser has to know are in scope WHILE IT IS PARSING.** The case
+//   is a word that changes what the grammar means: inside `first[T](xs: array of T)`, `T` is a type,
+//   and the same word outside that definition is a name to look up or a mistake. Left to a later
+//   pass, `T` stays an ordinary name and something downstream complains about a word the reader
+//   deliberately wrote -- from a function that no longer knows a type parameter was in scope. Other
+//   grammars ask it of other words: a loop label a `break` may name, a `let ... in` binding, a
+//   `where`-bound name, a macro parameter.
+//
+//   **It is not a symbol table and must not become one.** A symbol table holds what a name MEANS,
+//   is asked about types and definitions, and outlives the file; this holds spellings and answers
+//   one question. **A stack rather than a set, because the regions nest** -- `outer[T]` holding
+//   `inner[U]` sees both inside and only `T` after. And `clear` is there because a file that stopped
+//   on a syntax error may have left a region open, and a leftover name changes what the next file
+//   means.
+//
+// - **`names_end` is the lookahead a keyword-free grammar cannot do without.** A grammar that tells
+//   a definition from a call by what FOLLOWS the head has to step over the head first, and a type
+//   parameter list is part of it: `first[T](xs)` is a definition and `handlers[0](x)` is an index
+//   followed by a call, identical up to the `]`. What separates them is that only one holds nothing
+//   but names. It answers the index just past the closing bracket, and `None` for all three ways it
+//   can fail to be that -- no bracket, something other than a name inside, text that runs out --
+//   which is what a caller wants, all three meaning "not a definition".
+//
+//   **The tokens are parameters because they are the grammar's.** This package knows nothing about
+//   which of yours is a bracket. `kind_at` came with it: a scan that walks its own way along the
+//   list has no cursor to be relative to, and reading `items` by hand is reaching through the struct
+//   to do what the struct should offer.
+//
 // **0.7.0 -- WRITING A LITERAL BACK OUT, AND THE FOUR SENTENCES EVERY GRAMMAR WRITES FOR ITSELF.**
 //
 // `write_quoted` in `literal.sysl`, and `edit_distance`, `nearest_name`, `counted` and `article` in

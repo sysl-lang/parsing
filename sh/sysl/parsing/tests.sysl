@@ -1705,3 +1705,128 @@ a_count_and_an_article_read_as_english()
     assert_eq(article("integer"), "an")
     assert_eq(article("object"), "an")
     assert_eq(article(""), "a")
+
+// -- names in scope while parsing, and the lookahead over a list of them ---------------------------
+
+@test
+a_scoped_name_is_in_scope_until_its_region_closes()
+    var scope = scoped_names()
+    var outer: Buf[string] = buf()
+
+    outer.push("T")
+    scope.open_with(outer)
+
+    assert(scope.has("T"))
+    assert(!scope.has("U"))
+    assert_eq(scope.len(), 1)
+    assert_eq(scope.depth(), 1)
+
+    // A region inside it sees both, which is what a definition written inside another wants.
+    var inner: Buf[string] = buf()
+
+    inner.push("U")
+    scope.open_with(inner)
+
+    assert(scope.has("T"))
+    assert(scope.has("U"))
+    assert_eq(scope.depth(), 2)
+
+    // And leaving it makes the inner one unspellable again.
+    scope.close()
+
+    assert(scope.has("T"))
+    assert(!scope.has("U"))
+
+    scope.close()
+
+    assert(!scope.has("T"))
+    assert_eq(scope.len(), 0)
+    assert_eq(scope.depth(), 0)
+
+@test
+a_name_may_be_added_to_a_region_after_it_opens()
+    var scope = scoped_names()
+
+    scope.open()
+    scope.add("a")
+    scope.add("b")
+
+    assert(scope.has("a") && scope.has("b"))
+
+    scope.close()
+
+    assert(!scope.has("a"))
+
+@test
+a_scope_left_unclosed_is_cleared_rather_than_carried_into_the_next_parse()
+    // **The case this exists for is a file that stopped on a syntax error**, which may have left a
+    // region open -- and a leftover name would change what the next file means.
+    var scope = scoped_names()
+
+    scope.open()
+    scope.add("T")
+    scope.clear()
+
+    assert(!scope.has("T"))
+    assert_eq(scope.depth(), 0)
+
+    // Closing more regions than were opened does nothing, rather than reaching past the bottom.
+    scope.close()
+
+    assert_eq(scope.len(), 0)
+
+// **The variants are spelled apart from everything else in the module on purpose.** A variant name
+// is a module-level name here, so a bare `Number` would collide with `literal.sysl`'s own type and
+// make it private to this file -- which is a compile error a long way from the line that caused it.
+private enum Word
+    WName
+    WComma
+    WOpen
+    WClose
+    WOther
+end Word
+
+private words(kinds: Buf[Word]) -> Tokens[Word]
+    var ts: Tokens[Word] = tokens()
+
+    for i in 0..<kinds.len()
+        ts.push(kinds.at(i), point(i))
+
+    ts
+end words
+
+private word_list(text: string) -> Tokens[Word]
+    var kinds: Buf[Word] = buf()
+
+    for i in 0..<text.len
+        val c = text.bytes[i]
+
+        kinds.push(if c == u8('n') then WName elif c == u8(',') then WComma elif c == u8('[') then WOpen elif c == u8(']') then WClose else WOther)
+
+    words(kinds)
+end word_list
+
+@test
+a_bracketed_list_of_bare_names_is_told_from_everything_else()
+    // `[n]`, `[n, n]` -- a list, and the answer is where it ended.
+    assert_eq(names_end(word_list("[n]"), 0, WOpen, WClose, WComma, WName), Some(3))
+    assert_eq(names_end(word_list("[n,n]"), 0, WOpen, WClose, WComma, WName), Some(5))
+
+    // The scan starts where it is told to, so a head is stepped over by the caller.
+    assert_eq(names_end(word_list("n[n]"), 1, WOpen, WClose, WComma, WName), Some(4))
+
+    // **Anything but a name inside makes it not a list**, which is what separates `first[T](xs)`
+    // from `handlers[0](x)`.
+    assert(names_end(word_list("[0]"), 0, WOpen, WClose, WComma, WName).is_none())
+    assert(names_end(word_list("[n,0]"), 0, WOpen, WClose, WComma, WName).is_none())
+
+    // So does an empty pair, a list of no names not being a list of names.
+    assert(names_end(word_list("[]"), 0, WOpen, WClose, WComma, WName).is_none())
+
+    // So does a trailing separator, and text that runs out before the bracket closes.
+    assert(names_end(word_list("[n,]"), 0, WOpen, WClose, WComma, WName).is_none())
+    assert(names_end(word_list("[n"), 0, WOpen, WClose, WComma, WName).is_none())
+
+    // And so does no opening bracket at all, which is the ordinary answer at most positions.
+    assert(names_end(word_list("n"), 0, WOpen, WClose, WComma, WName).is_none())
+    assert(names_end(word_list(""), 0, WOpen, WClose, WComma, WName).is_none())

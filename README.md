@@ -24,6 +24,7 @@ sh/sysl/parsing/
     literal.sysl        numbers, quoted text, escapes
     layout.sysl         indentation as structure, brackets included
     tokens.sysl         a value with its span, and a cursor over a lexed token list
+    scope.sysl          the names a parser has to know are in scope while it is parsing
     pratt.sysl          expressions, by binding power
     diag.sysl           diagnostics, carets, and a report that truncates
     tests.sysl          what all of it claims, run by `sysl test .`
@@ -41,7 +42,7 @@ Name it in your project's `package.hocon` and `sysl build` fetches it:
 
 ```hocon
 dependencies {
-  parsing { git = "github.com/sysl-lang/parsing", version = "0.7.0" }
+  parsing { git = "github.com/sysl-lang/parsing", version = "0.8.0" }
 }
 ```
 

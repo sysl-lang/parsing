@@ -1,0 +1,91 @@
+module sh.sysl.parsing
+
+import sysl.buf.{Buf, buf}
+
+// The names a parser has to know are in scope WHILE IT IS PARSING, and nothing more.
+//
+// **This is not a symbol table and must not become one.** A symbol table belongs to the pass after
+// the parse: it holds what a name means, it is asked questions about types and definitions, and it
+// outlives the file. This holds a set of *spellings* and answers one question -- is this word one of
+// the names the region I am inside introduced -- which is a question a parser cannot avoid asking
+// and cannot answer from the tree it has not finished building.
+//
+// **The case it exists for is a name that changes what the grammar MEANS.** A type parameter is the
+// clearest one: inside `first[T](xs: array of T)`, the word `T` is a type, and outside that
+// definition the same word is a name to be looked up or a mistake. A parser that resolved it later
+// would have to leave `T` as an ordinary name and let a later pass find no such type -- which
+// complains about a word the reader deliberately wrote, and complains in a function that no longer
+// knows a type parameter was in scope.
+//
+// Other grammars ask the same question of other words: a loop label a `break` may name, a name
+// introduced by a `let ... in` in an expression grammar, a `where`-bound name, a macro parameter.
+//
+// **It is a STACK and not a set, because the regions nest.** `outer[T]` holding `inner[U]` has to
+// see both inside `inner` and only `T` after it closes, so a mark is pushed on the way in and
+// everything above it dropped on the way out. Innermost wins where two regions use one spelling,
+// which is what shadowing means and is what `has` walking backwards gives for free.
+//
+// **One parse at a time, and the parser holds one of these.** Nothing here is global: a program that
+// parses two files keeps one per parse, or clears it between them -- `clear` is there because a file
+// that stopped on a syntax error may have left a region unclosed, and a leftover name would change
+// what the next file means.
+struct ScopedNames
+    names: Buf[string]
+    marks: Buf[usize]
+
+    // The region being entered, remembered as where its names start.
+    open(*self)
+        self.marks.push(self.names.len())
+
+    // The same, with the names it introduces, which is what a parser reading a whole list has.
+    open_with(*self, names: Buf[string])
+        self.open()
+
+        for i in 0..<names.len()
+            self.names.push(names.at(i))
+
+    // One more name in the region currently open.
+    //
+    // **Nothing checks that a region IS open**, and that is deliberate: a grammar may want names in
+    // scope for a whole file -- the file being the outermost region -- and refusing them would make
+    // this useless for exactly that. What `close` does with no matching `open` is nothing.
+    add(*self, name: string)
+        self.names.push(name)
+
+    // The region being left, and every name it introduced with it.
+    close(*self)
+        self.marks.pop() match
+            Some(mark) -> self.names.truncate(mark)
+            None -> ()
+
+    // Whether this word is one of the names in scope.
+    //
+    // **Backwards, so the innermost region's is the one found** -- which matters not for the answer
+    // here, a `bool` being a `bool`, but because it is the walk a grammar that grows to carry
+    // something *beside* each name will want, and having the two agree costs nothing now.
+    has(self, name: string) -> bool
+        var i = self.names.len()
+
+        loop
+            if i == 0 then return false
+
+            i -= 1
+
+            if self.names.at(i) == name then return true
+    end has
+
+    // How many names are in scope, which is what a test asserts and what a parser can use to notice
+    // it has left a region unclosed.
+    len(self) -> usize = self.names.len()
+
+    // How many regions are open.
+    depth(self) -> usize = self.marks.len()
+
+    // Everything forgotten, for the next parse.
+    clear(*self)
+        self.names.clear()
+        self.marks.clear()
+end ScopedNames
+
+// An empty one, which is what a parser starts with.
+scoped_names() -> ScopedNames = ScopedNames(buf(), buf())

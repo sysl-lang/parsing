@@ -144,6 +144,50 @@ struct Tokens[T]
 end Tokens
 
 
+// Where a bracketed list of nothing but bare names ends, if that is what stands at `from`.
+//
+// **A LOOKAHEAD, for the one thing a keyword-free grammar cannot decide any other way.** A grammar
+// that tells a definition from a call by what FOLLOWS the head -- sysl's own shape, and slate's --
+// has to step over the head first, and a type parameter list is part of it: `first[T](xs)` is a
+// definition and `handlers[0](x)` is an index followed by a call, and the two are identical up to
+// the `]`. What separates them is that only one holds nothing but names.
+//
+// **`Some(i)` is the index just past the closing bracket**, so a caller carries on scanning from
+// there; `None` is "this is not that", which covers three cases a caller wants to treat the same
+// way: no opening bracket at all, something other than a name inside, and text that runs out first.
+//
+// **An empty pair answers `None`**, a list of no names not being a list of names. A grammar that
+// means something by `[]` is asking a different question and can look for the two tokens itself.
+//
+// The tokens are parameters because they are the *grammar's*: this package knows nothing about which
+// of your tokens is a bracket. Pass them in the order they appear -- `names_end(t, i, LBracket,
+// RBracket, Comma, Ident)`.
+names_end[T: Eq](toks: Tokens[T], from: usize, open: T, close: T, sep: T, name: T) -> Option[usize]
+    if kind_at(toks, from) != Some(open) then return None
+
+    var i = from + 1
+
+    loop
+        if kind_at(toks, i) != Some(name) then return None
+
+        i += 1
+
+        if kind_at(toks, i) != Some(sep) then break
+
+        i += 1
+
+    if kind_at(toks, i) != Some(close) then return None
+
+    Some(i + 1)
+end names_end
+
+// The kind of the token at an absolute index, which is what a lookahead over the list asks.
+//
+// **An index rather than an offset from the cursor**, because a scan like `names_end` walks its own
+// way along and has no cursor of its own to be relative to.
+kind_at[T](toks: Tokens[T], i: usize) -> Option[T] =
+    if i >= toks.items.len() then None else Some(toks.items.at(i).value)
+
 // An empty token list, to be filled by a lexer and then read by a parser.
 tokens[T]() -> Tokens[T] = Tokens(buf(), 0)
 
