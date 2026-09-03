@@ -233,6 +233,106 @@ private hex_digit(v: u8) -> u8 = if v < 10 then v + u8('0') else v - 10 + u8('a'
 private push_text(out: *Buf[u8], text: string)
     out.extend(text.bytes)
 
+// -- the English a message is written in -----------------------------------------------------------
+//
+// **Four small things every grammar that reports anything writes for itself**, and each is here
+// because writing one twice is how two copies of it come to disagree. They are not about parsing;
+// they are about the sentence a parser hands a person, which is what the rest of this file is about
+// too. slate had all four and had the guessing POLICY written out twice in one program.
+
+// How many single-character edits apart two names are.
+//
+// Levenshtein, over BYTES rather than characters. That is the right unit here for `escape_text`'s
+// reason: what this is asked about is an identifier, which every grammar in this toolkit builds out
+// of ASCII, and counting characters would cost a decode per comparison in a loop that runs once per
+// name in scope.
+edit_distance(a: string, b: string) -> usize
+    val x = a.bytes
+    val y = b.bytes
+
+    if x.len == 0 then return y.len
+    if y.len == 0 then return x.len
+
+    var previous: Buf[usize] = buf()
+    var current: Buf[usize] = buf()
+
+    for j in 0..<(y.len + 1)
+        previous.push(j)
+        current.push(0)
+
+    for i in 0..<x.len
+        current.set(0, i + 1)
+
+        for j in 0..<y.len
+            val substitute = previous.at(j) + (if x[i] == y[j] then 0 else 1)
+            val insert = current.at(j) + 1
+            val remove = previous.at(j + 1) + 1
+            var least = substitute
+
+            if insert < least then least = insert
+            if remove < least then least = remove
+
+            current.set(j + 1, least)
+
+        for j in 0..<(y.len + 1)
+            previous.set(j, current.at(j))
+
+    previous.at(y.len)
+end edit_distance
+
+// The name a reader probably meant, where one of them is close enough to be worth offering.
+//
+// **THE POLICY IS THE PART WORTH SHARING, NOT THE DISTANCE.** "Did you mean" is the most annoying
+// thing a compiler does when it guesses badly, so the threshold has to be tight: **one edit for a
+// short name and two for a longer one**, and nothing offered at all otherwise. `xs` and `ys` are one
+// edit apart and are not each other's typo; `recieve` and `receive` are two apart in seven
+// characters and plainly are.
+//
+// **`None` where nothing is close, which is most of the time.** The caller writes the sentence,
+// because what surrounds a guess differs everywhere one is made -- a name nothing bound, a field an
+// object does not have, a module that exports something else -- and one shared sentence would be the
+// wrong sentence somewhere.
+nearest_name(want: string, among: Buf[string]) -> Option[string]
+    // One past the widest limit below, so a name further off than any answer could be is never even
+    // recorded.
+    var best = ""
+    var best_at: usize = 3
+
+    for i in 0..<among.len()
+        val d = edit_distance(want, among.at(i))
+
+        if d < best_at
+            best = among.at(i)
+            best_at = d
+
+    val limit: usize = if want.bytes.len <= 4 then 1 else 2
+
+    if best == "" || best_at > limit then None else Some(best)
+end nearest_name
+
+// `1 argument`, `2 arguments` -- a number and the noun it makes plural.
+//
+// **A message that says `1 arguments` reads as a defect in the compiler**, which is a bad thing for
+// a message about a defect in the program to look like. Only the regular plural: a grammar wanting
+// `1 entry`/`2 entries` writes that one itself, and a table of English irregulars is not something
+// this belongs in.
+counted(n: usize, one: string) -> string = if n == 1 then s"${n} ${one}" else s"${n} ${one}s"
+
+// `a` or `an`, by the first letter, so that a message reads as English.
+//
+// **The letter and not the sound**, which is the rule that fits on one line and is right nearly
+// always. `an hour` and `a unicorn` are what it gets wrong, and neither is a word a message about a
+// type or a token is going to put here.
+article(word: string) -> string
+    val b = word.bytes
+
+    if b.len == 0 then return "a"
+
+    val c = b[0]
+
+    if c == u8('a') || c == u8('e') || c == u8('i') || c == u8('o') || c == u8('u') then "an" else "a"
+end article
+
 // Where a diagnostic is and where it was added, which is the key a report is ordered on.
 //
 // **The index is half the key rather than a tie-break**, since the sort it goes through is the

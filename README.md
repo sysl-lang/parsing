@@ -41,7 +41,7 @@ Name it in your project's `package.hocon` and `sysl build` fetches it:
 
 ```hocon
 dependencies {
-  parsing { git = "github.com/sysl-lang/parsing", version = "0.6.0" }
+  parsing { git = "github.com/sysl-lang/parsing", version = "0.7.0" }
 }
 ```
 
@@ -110,6 +110,39 @@ are, and prints the first five with `showing the first 5 of 23` — because a pa
 produces a great many diagnostics and the twentieth is never read.
 
 Nothing here is coloured. ANSI belongs to the program that knows whether its output is a terminal.
+
+Four things every grammar that reports anything ends up writing are here rather than in each of them:
+
+```sysl
+nearest_name("lenght", names)         // Some("length") -- or None, which is the usual answer
+counted(1, "argument")                // "1 argument", and "2 arguments"
+article("integer")                    // "an"
+edit_distance("recieve", "receive")   // 2
+```
+
+`nearest_name` shares the **policy** and not only the distance, which is the part worth having in one
+place: one edit for a short name, two for a longer one, and nothing offered at all otherwise. A badly
+guessed *did you mean* is the most annoying thing a compiler does. It answers an `Option[string]`
+rather than a sentence, because what surrounds a guess differs everywhere one is made — a name
+nothing bound, a field an object does not have, a module that exports something else.
+
+## Writing a literal back out
+
+`read_quoted` has an inverse:
+
+```sysl
+write_quoted("say \"hi\"", u8('"'))
+```
+
+**A reader without a writer is the half that goes wrong silently.** Anything that prints a value a
+person could type back — a REPL, a formatter, a `toString` — has to escape what it emits, and not
+doing it produces no error: it produces output that *is* a program and means something else. What
+comes out reads back as what went in, for every string, and the test asserts that round trip rather
+than the spelling of the escapes.
+
+It is not `escape_text`, and the difference is the audience: that one is for a **message** and
+escapes a backtick, which would close the span a diagnostic quotes into; this is for a **literal**,
+escapes the quote character it was given, and leaves a backtick alone.
 
 ## Expressions
 

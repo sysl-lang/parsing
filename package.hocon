@@ -13,7 +13,7 @@
 // This is the block a *consumer* writes to reach this package:
 //
 //     dependencies {
-//       parsing { git = "github.com/sysl-lang/parsing", version = "0.6.0" }
+//       parsing { git = "github.com/sysl-lang/parsing", version = "0.7.0" }
 //     }
 //
 // The coordinate names the package, `parsing`; the module a program imports is `sh.sysl.parsing`.
@@ -23,7 +23,7 @@
 
 package {
   name    = "parsing"
-  version = "0.6.0"
+  version = "0.7.0"
 
   // **The oldest compiler this builds with, and it is a released one.** Three of 0.0.76's changes
   // are written into these files rather than merely available to them: a `match` standing as an
@@ -37,6 +37,31 @@ package {
   // living, so it is the first thing to notice what reading text is awkward to write.
   sysl = "0.0.76"
 }
+
+// **0.7.0 -- WRITING A LITERAL BACK OUT, AND THE FOUR SENTENCES EVERY GRAMMAR WRITES FOR ITSELF.**
+//
+// `write_quoted` in `literal.sysl`, and `edit_distance`, `nearest_name`, `counted` and `article` in
+// `diag.sysl`. All five came OUT of `slate-language/slate`, where they had been written because
+// there was nowhere else for them; nothing here is new code, and one of them was already written
+// out twice in that one program.
+//
+// - **`write_quoted` is the inverse of `read_quoted`, and a reader without a writer is the half
+//   that goes wrong SILENTLY.** Anything that prints a value a person could type back -- a REPL, a
+//   formatter, a `toString` -- has to escape what it emits, and not doing it does not produce an
+//   error: it produces output that is a program and means something else. slate's `print(["a\"b"])`
+//   gave back `["a"b"]`, which does not parse, and a string holding a backslash and an `f` printed
+//   as `"e\f"`, which parses and is a formfeed. **The claim is a round trip and the test asserts
+//   the round trip**, not the spelling of the escapes.
+// - **It is not `escape_text`, and the difference is the audience.** That one is for a MESSAGE and
+//   escapes a backtick, which would close the span a diagnostic quotes into; this is for a LITERAL,
+//   escapes the quote it was given, and leaves a backtick alone.
+// - **`nearest_name` shares the POLICY and not the distance**, which is the part worth having in one
+//   place: one edit for a short name, two for a longer one, and nothing offered otherwise. A badly
+//   guessed "did you mean" is the most annoying thing a compiler does. It answers `Option[string]`
+//   rather than a sentence, because what surrounds a guess differs everywhere one is made.
+// - **`counted` and `article` are one line each and are here for the same reason**: `1 arguments`
+//   reads as a defect in the compiler, which is a bad look for a message about a defect in the
+//   program.
 
 // **0.6.0 -- A BARE NAME AFTER THE SIGIL, WHICH ONLY THIS READER CAN OFFER.**
 //

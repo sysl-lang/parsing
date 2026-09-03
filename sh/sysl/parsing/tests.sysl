@@ -1,6 +1,8 @@
 module sh.sysl.parsing
 @tests
 
+import sysl.buf.{Buf, buf}
+
 // What this package claims, run by `sysl test .`.
 
 // -- source -----------------------------------------------------------------------------------
@@ -1614,3 +1616,92 @@ reading_a_fence_moves_no_cursor()
 
     fence_run(&s, u8('"'))
     assert_eq(s.offset, 0)
+
+// -- writing a literal back out ----------------------------------------------------------------
+
+// **The claim is a ROUND TRIP, so that is what is asserted**: whatever goes in comes back out of
+// `read_quoted`, for every string that has anything awkward in it. Asserting the exact escaped text
+// instead would pin this implementation's spelling rather than the property that matters.
+private round_trips(text: string) -> bool
+    var s = scanner_of(write_quoted(text, u8('"')))
+
+    read_quoted(&s, u8('"')) match
+        Ok(back) -> back == text
+        Err(_) -> false
+end round_trips
+
+@test
+a_written_literal_reads_back_as_what_went_in()
+    assert(round_trips(""))
+    assert(round_trips("plain"))
+    assert(round_trips("a\"b"))
+    assert(round_trips("a\\b"))
+    assert(round_trips("a\nb\r\tc"))
+    assert(round_trips("a\0b"))
+
+    // A control character with no letter of its own, which is the `\xHH` path.
+    assert(round_trips("a\u{1}b"))
+
+    // **Above ASCII the bytes are copied**, so this is the case that fails if anything decodes and
+    // re-encodes: what comes back would be mojibake rather than the text.
+    assert(round_trips("héllo 日本語"))
+
+@test
+the_quote_is_the_callers_and_a_backtick_is_not_escaped()
+    // The quote character is a parameter for `read_quoted`'s reason -- which one a language uses is
+    // the language's business -- so writing with one leaves the other alone.
+    assert_eq(write_quoted("a'b", u8('"')), "\"a'b\"")
+    assert_eq(write_quoted("a\"b", u8('\'')), "'a\"b'")
+
+    // **`escape_text` escapes a backtick and this does not**, and the difference is the audience: a
+    // backtick would close the span a MESSAGE quotes into, and no grammar here has `\`` as an escape
+    // for a literal to read back.
+    assert_eq(write_quoted("a`b", u8('"')), "\"a`b\"")
+    assert_eq(escape_text("a`b".bytes), "a\\`b")
+
+// -- the English a message is written in ---------------------------------------------------------
+
+@test
+an_edit_distance_counts_single_character_changes()
+    assert_eq(edit_distance("", ""), 0)
+    assert_eq(edit_distance("abc", "abc"), 0)
+    assert_eq(edit_distance("", "abc"), 3)
+    assert_eq(edit_distance("abc", ""), 3)
+    assert_eq(edit_distance("abc", "abd"), 1)
+    assert_eq(edit_distance("abc", "ab"), 1)
+    assert_eq(edit_distance("ab", "abc"), 1)
+    assert_eq(edit_distance("recieve", "receive"), 2)
+
+@test
+a_guess_is_offered_only_where_it_is_NEARLY_right()
+    var names: Buf[string] = buf()
+
+    names.push("length")
+    names.push("filter")
+    names.push("xs")
+
+    // Two edits in a six-letter name is a typo worth naming.
+    assert_eq(nearest_name("lenght", names).unwrap(), "length")
+    assert_eq(nearest_name("filtre", names).unwrap(), "filter")
+
+    // **A SHORT name gets ONE edit and no more, which is the whole of why the limit is not a single
+    // number.** `ys` is one from `xs` and is offered it; `lenght` is two from `length` and is
+    // offered it -- but a three-letter word two edits from something is not a typo, it is a
+    // different word, and at that length two edits can reach almost anything.
+    assert_eq(nearest_name("ys", names).unwrap(), "xs")
+    assert(nearest_name("len", names).is_none())
+
+    // Nothing close at all, which is the ordinary answer.
+    assert(nearest_name("wibble", names).is_none())
+    assert(nearest_name("anything", buf()).is_none())
+
+@test
+a_count_and_an_article_read_as_english()
+    assert_eq(counted(0, "argument"), "0 arguments")
+    assert_eq(counted(1, "argument"), "1 argument")
+    assert_eq(counted(2, "argument"), "2 arguments")
+
+    assert_eq(article("string"), "a")
+    assert_eq(article("integer"), "an")
+    assert_eq(article("object"), "an")
+    assert_eq(article(""), "a")

@@ -490,6 +490,65 @@ read_quoted(s: *Scanner, quote: u8) -> Result[string, LitError]
     Ok(b.finish())
 end read_quoted
 
+// The inverse: a string written back out as a literal `read_quoted` would read again.
+//
+// **A module that reads a literal and cannot write one is half a module, and the missing half is
+// the one that goes wrong silently.** Anything that prints a value a program could type -- a REPL,
+// a formatter, a pretty-printer, a `toString` -- has to escape what it emits, and the failure of
+// not doing it is not an error message: it is output that *is* a program and means something else.
+// slate found this the hard way. `print(["a\"b"])` gave back `["a"b"]`, which does not parse, and a
+// string holding a backslash and an `f` printed as `"e\f"`, which parses and is a formfeed.
+//
+// **Escaped: the quote itself, the backslash, and the characters `read_escape` has a letter for.**
+// Anything else that is a control character goes out as `\xHH`, which `read_escape` also takes. So
+// the round trip holds for every string -- `read_quoted` of `write_quoted` of a string is that
+// string -- and there is a test that says so over the awkward ones.
+//
+// **What is NOT escaped is every ordinary character above ASCII**, and the bytes are copied rather
+// than re-encoded. A lead byte read as a codepoint and written again becomes two bytes of mojibake,
+// so accented text in a value would come back as something else entirely -- the same trap
+// `escape_text` documents, and the same answer.
+//
+// **This is not `escape_text`, and the difference is the audience.** That one is for a MESSAGE: it
+// escapes a backtick, because a backtick would close the span a diagnostic quotes into, and it wraps
+// nothing. This is for a LITERAL: it escapes the quote, leaves a backtick alone -- no grammar here
+// has `\``  as an escape -- and wraps the result in the quote character it was given.
+write_quoted(text: string, quote: u8) -> string
+    val b = text.bytes
+    var out: Buf[u8] = buf()
+
+    out.push(quote)
+
+    for i in 0..<b.len
+        val c = b[i]
+
+        if c == quote then
+            out.push(u8('\\'))
+            out.push(quote)
+        elif c == u8('\\') then push_two(&out, "\\\\")
+        elif c == u8('\n') then push_two(&out, "\\n")
+        elif c == u8('\r') then push_two(&out, "\\r")
+        elif c == u8('\t') then push_two(&out, "\\t")
+        elif c == u8('\0') then push_two(&out, "\\0")
+        elif is_control(c) then
+            push_two(&out, "\\x")
+            out.push(hex_of(c >> 4))
+            out.push(hex_of(c & 15))
+        else
+            out.push(c)
+
+    out.push(quote)
+
+    // Every byte above is either copied from the input or an ASCII one this function wrote, so what
+    // comes out is valid UTF-8 exactly where the input was -- and a `string` in sysl already is.
+    from_utf8_unchecked(out.view())
+end write_quoted
+
+private push_two(out: *Buf[u8], text: string)
+    out.extend(text.bytes)
+
+private hex_of(v: u8) -> u8 = if v < 10 then v + u8('0') else v - 10 + u8('a')
+
 // A quoted literal with expressions written into it, taken apart.
 //
 // **`chunks` is one longer than `holes`**, which is the whole shape: a run of literal text before
