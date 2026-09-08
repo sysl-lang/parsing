@@ -42,7 +42,7 @@ Name it in your project's `package.hocon` and `sysl build` fetches it:
 
 ```hocon
 dependencies {
-  parsing { git = "github.com/sysl-lang/parsing", version = "0.8.0" }
+  parsing { git = "github.com/sysl-lang/parsing", version = "0.9.0" }
 }
 ```
 

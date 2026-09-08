@@ -209,6 +209,42 @@ struct Layout
         closed
     end close_bracket
 
+    // The blocks opened inside the innermost bracket pair, closed by a separator that belongs to the
+    // bracket rather than to the block.
+    //
+    // **A closing bracket is not the only thing that ends such a block, and the other one is a
+    // comma.** `close_bracket` exists because a `)` sits on the same line as the block's last line,
+    // so no line ending will ever close it; a separator between two arguments is that same situation
+    // one token earlier:
+    //
+    //     apply((x) ->
+    //         val doubled = x * 2
+    //
+    //         doubled + 1, 5)
+    //
+    // The `5` is the call's second argument rather than part of the closure's body, so the block has
+    // to close at the comma. Without this the `5` is read inside the body, and the `)` then closes a
+    // block whose last line was never the last line of anything.
+    //
+    // **Which token does this is the grammar's**, exactly as `opens_block` is: sysl's separator is a
+    // comma, and a language whose bracketed lists are separated by something else says so itself.
+    // The count comes back for the same reason `close_bracket`'s does -- a lexer emits that many
+    // `DEDENT`s before the separator it is about to emit.
+    //
+    // **Nothing happens outside brackets**, where a line ending closes a block in the ordinary way
+    // and a separator has no block of its own to end.
+    close_blocks_in_bracket(*self) -> usize
+        if self.brackets == 0 then return 0
+
+        var closed: usize = 0
+
+        while self.blocks.len() > 1 && self.frame() == self.brackets
+            self.blocks.pop()
+            closed += 1
+
+        closed
+    end close_blocks_in_bracket
+
     // What a line at this column does.
     //
     // Call it once per line that has something on it, with the column its first non-blank character

@@ -13,7 +13,7 @@
 // This is the block a *consumer* writes to reach this package:
 //
 //     dependencies {
-//       parsing { git = "github.com/sysl-lang/parsing", version = "0.8.0" }
+//       parsing { git = "github.com/sysl-lang/parsing", version = "0.9.0" }
 //     }
 //
 // The coordinate names the package, `parsing`; the module a program imports is `sh.sysl.parsing`.
@@ -23,7 +23,7 @@
 
 package {
   name    = "parsing"
-  version = "0.8.0"
+  version = "0.9.0"
 
   // **The oldest compiler this builds with, and it is a released one.** Three of 0.0.76's changes
   // are written into these files rather than merely available to them: a `match` standing as an
@@ -37,6 +37,26 @@ package {
   // living, so it is the first thing to notice what reading text is awkward to write.
   sysl = "0.0.76"
 }
+
+// **0.9.0 -- THE OTHER TOKEN THAT ENDS A BLOCK OPENED INSIDE BRACKETS.**
+// `close_blocks_in_bracket` in `layout.sysl`, and it is `close_bracket`'s missing half rather than a
+// new idea. 0.3.0 made a block openable inside a bracket pair and gave the closing bracket the job of
+// ending it, because no line ending ever would; what it left out is that a **separator** is that same
+// situation one token earlier:
+//
+//     apply((x) ->
+//         val doubled = x * 2
+//
+//         doubled + 1, 5)
+//
+// The `5` is the call's second argument. Without this the comma means nothing, so the `5` is read
+// inside the closure's body and the `)` then closes a block whose last line was never the last line
+// of anything. **Raised by writing the self-hosted sysl compiler's lexer**, whose specification says
+// in as many words that "the bracket rule resumes at the dedent, so an argument written after the
+// block is read at the outer level" -- a sentence the package could not implement.
+//
+// **Which token does it stays the grammar's**, as `opens_block` already is: this answers how many
+// blocks a separator closed, and says nothing about which separators there are.
 
 // **0.8.0 -- THE TWO PIECES OF BOOKKEEPING A PARSER KEEPS BESIDE ITS CURSOR.** `ScopedNames` in
 // `scope.sysl`, and `names_end` with `kind_at` in `tokens.sysl`. Both came OUT of

@@ -1237,6 +1237,64 @@ blocks_and_brackets_nest_to_any_depth()
 end blocks_and_brackets_nest_to_any_depth
 
 @test
+a_separator_closes_the_blocks_that_opened_inside_the_bracket()
+    // `apply((x) ->` with a body, and then `, 5)`. The `5` is the call's second argument, so the
+    // comma has to close the body -- and no line ending can, for the reason the `)` could not.
+    var l = layout()
+
+    l.open_bracket()
+    l.opens_block()
+    assert_eq(l.line(4), Deeper)
+
+    assert_eq(l.close_blocks_in_bracket(), 1)
+    assert_eq(l.depth(), 0)
+
+    // …and the bracket then has nothing left of its own to close.
+    assert_eq(l.close_bracket(), 0)
+end a_separator_closes_the_blocks_that_opened_inside_the_bracket
+
+@test
+a_separator_outside_brackets_closes_nothing()
+    // A comma at the top level is an ordinary comma. Only a block that a bracket suspended has no
+    // line ending coming for it.
+    var l = layout()
+
+    assert_eq(l.line(4), Deeper)
+    assert_eq(l.close_blocks_in_bracket(), 0)
+    assert_eq(l.depth(), 1)
+end a_separator_outside_brackets_closes_nothing
+
+@test
+a_separator_leaves_a_block_the_bracket_did_not_open()
+    // The block is older than the bracket, so the bracket's separator is written *inside* it and has
+    // nothing to say about where it ends. This is the case that makes the test a bracket depth
+    // rather than "is a block open".
+    var l = layout()
+
+    assert_eq(l.line(4), Deeper)
+    l.open_bracket()
+
+    assert_eq(l.close_blocks_in_bracket(), 0)
+    assert_eq(l.depth(), 1)
+end a_separator_leaves_a_block_the_bracket_did_not_open
+
+@test
+a_separator_closes_every_block_the_bracket_opened()
+    // Two blocks inside one pair -- an arm whose body opened another. Both end at the comma, and the
+    // count is what tells the lexer how many `DEDENT`s to write before it.
+    var l = layout()
+
+    l.open_bracket()
+    l.opens_block()
+    assert_eq(l.line(4), Deeper)
+    l.opens_block()
+    assert_eq(l.line(8), Deeper)
+
+    assert_eq(l.close_blocks_in_bracket(), 2)
+    assert_eq(l.depth(), 0)
+end a_separator_closes_every_block_the_bracket_opened
+
+@test
 a_block_opener_with_nothing_indented_under_it_just_passes()
     // `f(x match` and then a line at the same column. The flag is spent by the line either way, so
     // the layout does not stay half-open; the grammar reports the missing arms.
