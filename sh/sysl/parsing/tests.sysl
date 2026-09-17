@@ -263,6 +263,43 @@ a_number_is_an_integer_until_something_says_otherwise()
         Real(x) -> assert_eq(x, 1000.5)
 end a_number_is_an_integer_until_something_says_otherwise
 
+// `read_number` used to build the fraction into a `ulong` on the way to finding where it ends, so a
+// fraction of twenty-one digits or more was refused as `Overflow` -- a mistake about an accumulator
+// nothing was ever going to keep, since the value comes from `to_real` reading the whole span as
+// text. A real literal has to round to the nearest double whatever its length, as every other
+// language's reader does.
+@test
+a_long_fraction_rounds_instead_of_overflowing()
+    num_of("0.123456789012345678901").unwrap() match
+        Int(_) -> assert(false, "0.123456789012345678901 is not an integer")
+        Real(x) -> assert_eq(x, 0.123456789012345678901)
+
+    // Forty digits: several times past the twenty-one that first showed the defect.
+    num_of("0.1234567890123456789012345678901234567890").unwrap() match
+        Int(_) -> assert(false, "not an integer")
+        Real(x) -> assert_eq(x, 0.1234567890123456789012345678901234567890)
+end a_long_fraction_rounds_instead_of_overflowing
+
+// The integer part in front of a fraction is the same case: it never becomes the `Real`'s value
+// either, so a run too large for a `ulong` there is not a mistake as long as a `.` or an `e`
+// follows it.
+@test
+a_long_integer_part_with_a_fraction_rounds_instead_of_overflowing()
+    num_of("99999999999999999999.5").unwrap() match
+        Int(_) -> assert(false, "not an integer")
+        Real(x) -> assert_eq(x, 99999999999999999999.5)
+end a_long_integer_part_with_a_fraction_rounds_instead_of_overflowing
+
+// An actual integer literal -- nothing after it to make it a real -- keeps the refusal: there is no
+// `to_real` for it to fall back on, so a value that will not fit its `ulong` is exactly the mistake
+// `Overflow` says it is.
+@test
+an_integer_with_no_fraction_still_overflows()
+    num_of("99999999999999999999") match
+        Ok(_) -> assert(false, "no fraction to save it")
+        Err(e) -> assert_eq(str(e), "the number is too large to hold")
+end an_integer_with_no_fraction_still_overflows
+
 // The dot belongs to the number only when a digit follows it, which is what keeps `0..<n` and
 // `1.max()` readable without a space.
 @test

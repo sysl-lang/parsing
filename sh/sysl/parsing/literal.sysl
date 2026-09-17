@@ -180,6 +180,94 @@ read_digits(s: *Scanner, base: int) -> Result[ulong, LitError]
     if digits == 0 then Err(NoDigits(point(start))) else Ok(v)
 end read_digits
 
+// The same run, checked for its SHAPE alone -- the underscore rule and "at least one digit" -- and
+// not turned into a value.
+//
+// **A real literal's fraction and exponent are never built into a `ulong`.** `read_number` reads
+// them only to find where they end; the value comes later, from `to_real` reading the whole span as
+// text and handing it to `parse_real`, which is `strtod` underneath and holds a decimal expansion of
+// any length. Calling `read_digits` there anyway made `0.123456789012345678901` an `Overflow` --
+// twenty-one digits read as a 64-bit integer do not fit one, and no such integer was ever going to be
+// built from them. A real literal has to round to the nearest double whatever its length, the way
+// every other language reads one.
+skip_digits(s: *Scanner, base: int) -> Result[unit, LitError]
+    val start = s.offset
+    var digits: usize = 0
+
+    loop
+        s.peek() match
+            Some(c) ->
+                if c == u8('_') then
+                    if digits == 0 then return Err(BadDigit(one_at(s.offset)))
+
+                    s.bump()
+
+                    s.peek() match
+                        Some(d) ->
+                            if d.digit_value(base).is_none() then return Err(BadDigit(one_at(s.offset)))
+                        None -> return Err(BadDigit(point(s.offset)))
+                else
+                    c.digit_value(base) match
+                        Some(_) ->
+                            digits += 1
+                            s.bump()
+                        None -> break
+            None -> break
+
+    if digits == 0 then Err(NoDigits(point(start))) else Ok(())
+end skip_digits
+
+// A run of digits whose OWN overflow is not yet a mistake -- `read_number`'s leading decimal run,
+// which may turn out to be the integer part of a real once the caller has seen what follows it.
+struct DigitRun
+    // The accumulated value, meaningful only when `overflowed` is false.
+    v: ulong
+    overflowed: bool
+end DigitRun
+
+// `read_digits`'s loop, kept running past the point where a `ulong` would wrap rather than
+// reporting there. The whole run is always consumed, exactly as `read_digits` consumes it before
+// reporting an overflow -- so a caller that decides the run WAS a plain integer can report the same
+// `Overflow(span)` `read_digits` would have, and a caller that finds a `.` or an `e` after it can
+// ignore the flag, the real value coming from `to_real` over the whole span rather than from `v`.
+private read_digit_run(s: *Scanner, base: int) -> Result[DigitRun, LitError]
+    val start = s.offset
+    var v: ulong = 0
+    var digits: usize = 0
+    var overflowed = false
+
+    loop
+        s.peek() match
+            Some(c) ->
+                if c == u8('_') then
+                    if digits == 0 then return Err(BadDigit(one_at(s.offset)))
+
+                    s.bump()
+
+                    s.peek() match
+                        Some(d) ->
+                            if d.digit_value(base).is_none() then return Err(BadDigit(one_at(s.offset)))
+                        None -> return Err(BadDigit(point(s.offset)))
+                else
+                    c.digit_value(base) match
+                        Some(d) ->
+                            val b = ulong(base)
+                            val dv = ulong(d)
+
+                            if !overflowed
+                                if v > (ulong_max - dv) / b then
+                                    overflowed = true
+                                else
+                                    v = v * b + dv
+
+                            digits += 1
+                            s.bump()
+                        None -> break
+            None -> break
+
+    if digits == 0 then Err(NoDigits(point(start))) else Ok(DigitRun(v, overflowed))
+end read_digit_run
+
 // An integer, with the radix prefix if it has one.
 //
 // `0x`/`0X` is hexadecimal, `0o`/`0O` octal, `0b`/`0B` binary, and anything else decimal -- which
@@ -235,15 +323,41 @@ end read_integer
 // written into a stack array.
 read_number(s: *Scanner) -> Result[Number, LitError]
     val start = s.offset
+
+    // A radix-prefixed literal is an integer and nothing else: `0x1.8p3` is C's hexadecimal float
+    // and is not something this reads. Nothing can turn it into a real, so its overflow is reported
+    // at once -- the same `read_integer` would report -- rather than deferred.
+    if s.peek() == Some(u8('0')) then
+        s.peek_at(1) match
+            Some(p) ->
+                val base = if p == u8('x') || p == u8('X') then
+                        16
+                    elif p == u8('o') || p == u8('O') then
+                        8
+                    elif p == u8('b') || p == u8('B') then
+                        2
+                    else
+                        0
+
+                if base != 0 then
+                    val from = s.offset
+
+                    s.skip(2)
+
+                    return read_digits(s, base) match
+                        Err(NoDigits(_)) -> Err(NoDigits(Span(from, from + 2)))
+                        Err(e) -> Err(e)
+                        Ok(v) -> Ok(Int(v))
+            None -> ()
+
+    // The bare decimal run may turn out to be the integer part of a real, so ITS overflow is
+    // deferred until the shape is known: a real's value never comes from this accumulator -- it
+    // comes from `to_real`, reading the whole span as text below -- so a value too large for a
+    // `ulong` in front of a `.` or an `e` is not yet a mistake.
     var real_shaped = false
 
-    read_integer(s) match
-        Ok(v) ->
-            // A prefixed literal is an integer and nothing else: `0x1.8p3` is C's hexadecimal float
-            // and is not something this reads.
-            if s.offset - start >= 2 && s.src[start] == u8('0') && !s.src[start + 1].is_digit() then
-                return Ok(Int(v))
-
+    read_digit_run(s, 10) match
+        Ok(run) ->
             if s.peek() == Some(u8('.')) then
                 s.peek_at(1) match
                     Some(d) ->
@@ -251,7 +365,7 @@ read_number(s: *Scanner) -> Result[Number, LitError]
                             real_shaped = true
                             s.bump()
 
-                            read_digits(s, 10) match
+                            skip_digits(s, 10) match
                                 Err(e) -> return Err(e)
                                 Ok(_) -> ()
                     None -> ()
@@ -269,13 +383,18 @@ read_number(s: *Scanner) -> Result[Number, LitError]
                                     real_shaped = true
                                     s.skip(if signed then 2 else 1)
 
-                                    read_digits(s, 10) match
+                                    skip_digits(s, 10) match
                                         Err(er) -> return Err(er)
                                         Ok(_) -> ()
                             None -> ()
                 None -> ()
 
-            if !real_shaped then return Ok(Int(v))
+            if !real_shaped then
+                // Now, and only now, is the leading run's own overflow a mistake: nothing followed
+                // it that could read its value from anywhere but the accumulator.
+                if run.overflowed then return Err(Overflow(s.span_from(start)))
+
+                return Ok(Int(run.v))
 
             val span = s.span_from(start)
 
