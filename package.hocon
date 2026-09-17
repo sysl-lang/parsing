@@ -23,7 +23,7 @@
 
 package {
   name    = "parsing"
-  version = "0.9.0"
+  version = "0.9.1"
 
   // **The oldest compiler this builds with, and it is a released one.** Three of 0.0.76's changes
   // are written into these files rather than merely available to them: a `match` standing as an
