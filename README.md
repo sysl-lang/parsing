@@ -42,7 +42,7 @@ Name it in your project's `package.hocon` and `sysl build` fetches it:
 
 ```hocon
 dependencies {
-  parsing { git = "github.com/sysl-lang/parsing", version = "0.9.0" }
+  parsing { git = "github.com/sysl-lang/parsing", version = "0.10.0" }
 }
 ```
 
@@ -109,6 +109,11 @@ The caret is placed by **display width** rather than by byte count, so a line wi
 character in it still points at the right thing. A `Report` gathers many, sorts them by where they
 are, and prints the first five with `showing the first 5 of 23` — because a parser that resumes
 produces a great many diagnostics and the twentieth is never read.
+
+Text read with a margin stripped from every line — a literate document's code indent, a doc comment's
+`/// ` — is reported where the reader sees it with `d.render(src, col_shift)` (and
+`report.render(src, col_shift)`): the column on the `-->` line moves by that many, and the quoted line
+and caret stay the text that was read.
 
 Nothing here is coloured. ANSI belongs to the program that knows whether its output is a terminal.
 

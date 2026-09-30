@@ -13,7 +13,7 @@
 // This is the block a *consumer* writes to reach this package:
 //
 //     dependencies {
-//       parsing { git = "github.com/sysl-lang/parsing", version = "0.9.0" }
+//       parsing { git = "github.com/sysl-lang/parsing", version = "0.10.0" }
 //     }
 //
 // The coordinate names the package, `parsing`; the module a program imports is `sh.sysl.parsing`.
@@ -23,7 +23,7 @@
 
 package {
   name    = "parsing"
-  version = "0.9.1"
+  version = "0.10.0"
 
   // **The oldest compiler this builds with, and it is a released one.** Three of 0.0.76's changes
   // are written into these files rather than merely available to them: a `match` standing as an
@@ -37,6 +37,22 @@ package {
   // living, so it is the first thing to notice what reading text is awkward to write.
   sysl = "0.0.76"
 }
+
+// **0.10.0 -- A DIAGNOSTIC NAMES THE COLUMN THE READER SEES, WHERE A MARGIN WAS STRIPPED BEFORE READING.**
+// `Diagnostic.render` and `Report.render` take `col_shift: usize = 0`, added to the column the `-->`
+// line prints and to nothing else. **Raised by the self-hosted sysl compiler**, whose literate
+// `.lsysl` files lose four columns of indent before the lexer sees them: an analysis diagnostic named
+// the tangled column (5:23) where the reference names the document's (5:27), and nothing a caller
+// held could move the number the renderer printed.
+//
+// - **A uniform shift rather than a position-mapping callback**, because every case it serves strips
+//   the SAME margin from every line -- a literate indent, a doc comment's `/// `, an indented Markdown
+//   block -- and a text whose lines moved by different amounts is already `sub_source`'s job, which
+//   keeps every offset where it was. A callback would be a function-typed default parameter for what
+//   is one addition.
+// - **Only the number moves.** The quoted line and the caret are the text the span is a span of, so
+//   they stay as read; that is also what the reference compiler prints for a literate file.
+// - **Compatible**: the parameter defaults to zero, so every existing `render(src)` is unchanged.
 
 // **0.9.0 -- THE OTHER TOKEN THAT ENDS A BLOCK OPENED INSIDE BRACKETS.**
 // `close_blocks_in_bracket` in `layout.sysl`, and it is `close_bracket`'s missing half rather than a

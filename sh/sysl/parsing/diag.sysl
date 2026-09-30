@@ -87,7 +87,14 @@ struct Diagnostic
     // A span covering more than one line is drawn against its first line and its caret stops at the
     // end of that line: what a multi-line span usually means is an unterminated something, and the
     // useful place to point is where it started.
-    render(self, src: Source) -> string
+    //
+    // **`col_shift` is for text a reader saw with a margin the parser never did.** A grammar that
+    // strips the same number of columns from every line before reading it -- a literate document's
+    // code indent, a doc-comment's `/// `, a Markdown code block -- measures its spans in the
+    // stripped text, and the place the reader has open is that many columns further along. The shift
+    // is added to the column the `-->` line names and to nothing else: the quoted line and the caret
+    // are the text that was read, which is what the span is a span of.
+    render(self, src: Source, col_shift: usize = 0) -> string
         val from = src.locate(self.span.start)
         val line_text = src.line_text(from.line)
         val number = str(from.line)
@@ -104,7 +111,7 @@ struct Diagnostic
         b.push(":")
         b.push(number)
         b.push(":")
-        b.push(str(from.col))
+        b.push(str(from.col + col_shift))
         b.push("\n")
         bar(&b, gutter)
         b.push("\n")
@@ -394,7 +401,9 @@ struct Report
     //
     // **It sorts a table of positions and not the report**, so rendering a report is a reading of it:
     // a caller that prints one and then walks its items gets them in the order it added them.
-    render(self, src: Source) -> string
+    //
+    // `col_shift` reaches every diagnostic's `-->` line, as `Diagnostic.render` describes.
+    render(self, src: Source, col_shift: usize = 0) -> string
         var b = str_builder()
         var order: Buf[Placed] = buf()
 
@@ -410,7 +419,7 @@ struct Report
         for i in 0..<shown
             if i > 0 then b.push("\n")
 
-            b.push(self.items.at(xs[i].index).render(src))
+            b.push(self.items.at(xs[i].index).render(src, col_shift))
 
         if shown < xs.len then
             b.push(s"\nshowing the first ${shown} of ${xs.len}\n")

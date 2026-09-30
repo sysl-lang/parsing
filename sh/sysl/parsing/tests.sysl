@@ -769,6 +769,49 @@ the_gutter_is_as_wide_as_the_line_number()
         "a two-digit gutter")
 end the_gutter_is_as_wide_as_the_line_number
 
+// Text read with a margin stripped from every line is reported at the column the reader sees: the
+// `-->` line moves, and the quoted line and the caret stay the text that was read.
+@test
+a_column_shift_moves_the_reported_column_and_nothing_else()
+    val src = source_of("doc.md", "module demo\n\nf(x: T) -> T = x + x\n")
+    val d = error(Span(28, 33), "no '+' here")
+
+    same(d.render(src, 4),
+        "error: no '+' here\n" +
+        " --> doc.md:3:20\n" +
+        "  |\n" +
+        "3 | f(x: T) -> T = x + x\n" +
+        "  |                ^^^^^\n",
+        "four columns further along")
+
+    same(d.render(src),
+        "error: no '+' here\n" +
+        " --> doc.md:3:16\n" +
+        "  |\n" +
+        "3 | f(x: T) -> T = x + x\n" +
+        "  |                ^^^^^\n",
+        "no shift unless one is asked for")
+
+    var r = full_report()
+
+    r.add(d)
+    r.add(error(Span(0, 6), "first"))
+
+    same(r.render(src, 4),
+        "error: first\n" +
+        " --> doc.md:1:5\n" +
+        "  |\n" +
+        "1 | module demo\n" +
+        "  | ^^^^^^\n" +
+        "\n" +
+        "error: no '+' here\n" +
+        " --> doc.md:3:20\n" +
+        "  |\n" +
+        "3 | f(x: T) -> T = x + x\n" +
+        "  |                ^^^^^\n",
+        "a report shifts every diagnostic it renders")
+end a_column_shift_moves_the_reported_column_and_nothing_else
+
 @test
 a_report_sorts_by_position_and_stops_at_its_limit()
     val src = source_of("t", "abcdef")
