@@ -13,7 +13,7 @@
 // This is the block a *consumer* writes to reach this package:
 //
 //     dependencies {
-//       parsing { git = "github.com/sysl-lang/parsing", version = "0.10.0" }
+//       parsing { git = "github.com/sysl-lang/parsing", version = "0.10.1" }
 //     }
 //
 // The coordinate names the package, `parsing`; the module a program imports is `sh.sysl.parsing`.
@@ -23,7 +23,7 @@
 
 package {
   name    = "parsing"
-  version = "0.10.0"
+  version = "0.10.1"
 
   // **The oldest compiler this builds with, and it is a released one.** Three of 0.0.76's changes
   // are written into these files rather than merely available to them: a `match` standing as an
@@ -37,6 +37,14 @@ package {
   // living, so it is the first thing to notice what reading text is awkward to write.
   sysl = "0.0.76"
 }
+
+// **0.10.1 -- THE CARET SITS UNDER A TAB-INDENTED SPAN.** `Diagnostic.render` measured the text
+// before the span by display width, and a tab has none of its own -- it moves to the next stop,
+// wherever the terminal keeps them -- so it counted as zero columns and the caret on a tab-indented
+// line landed a whole indent to the left of what it meant. The caret's line now copies every tab
+// before the span and pads only the runs between tabs by display width; the quoted line and the
+// caret's line open with margins of one width, so each tab lands at the same stop in both.
+// **Compatible**: a line with no tab renders byte for byte as before.
 
 // **0.10.0 -- A DIAGNOSTIC NAMES THE COLUMN THE READER SEES, WHERE A MARGIN WAS STRIPPED BEFORE READING.**
 // `Diagnostic.render` and `Report.render` take `col_shift: usize = 0`, added to the column the `-->`
