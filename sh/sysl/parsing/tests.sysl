@@ -734,6 +734,36 @@ a_caret_lands_under_wide_characters()
         "past two wide characters")
 end a_caret_lands_under_wide_characters
 
+// A tab is as wide as the distance to the next stop, which only the terminal knows, so the caret's
+// line carries the tab itself and lands at the stop the quoted line's tab did.
+@test
+a_caret_lands_after_a_tab()
+    val src = source_of("t", "a\tb\n")
+
+    same(error(Span(2, 3), "here").render(src),
+        "error: here\n" +
+        " --> t:1:3\n" +
+        "  |\n" +
+        "1 | a\tb\n" +
+        "  |  \t^\n",
+        "the tab copied, the 'a' padded")
+end a_caret_lands_after_a_tab
+
+// The common case is a body indented with tabs, where a caret measured as zero columns for each tab
+// would land a whole indent to the left of what it means.
+@test
+a_caret_lands_on_a_line_indented_with_tabs()
+    val src = source_of("t", "f()\n\t\tboom 日 x\n")
+
+    same(error(Span(15, 16), "here").render(src),
+        "error: here\n" +
+        " --> t:2:10\n" +
+        "  |\n" +
+        "2 | \t\tboom 日 x\n" +
+        "  | \t\t        ^\n",
+        "two tabs copied, then the display width of what follows them")
+end a_caret_lands_on_a_line_indented_with_tabs
+
 // What a multi-line span usually means is an unterminated something, and the useful place to point
 // is where it started -- so the caret stops at the end of the first line.
 @test

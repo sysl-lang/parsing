@@ -80,9 +80,12 @@ struct Diagnostic
     //
     // Everything that makes the rendering line up is measured here rather than assumed: the gutter
     // is as wide as the line number it holds, and the caret is placed by the **display width** of
-    // the text before it, so a line with a tab or a wide character in it still has the caret under
-    // the right thing. That is `sysl.text.columns`, the Unicode width data, and it is the same
-    // measurement `sysl.table` lays its columns out with.
+    // the text before it, so a line with a wide character in it still has the caret under the right
+    // thing. That is `sysl.text.columns`, the Unicode width data, and it is the same measurement
+    // `sysl.table` lays its columns out with. **A tab has no width of its own** -- it moves to the
+    // next stop, wherever the terminal keeps them -- so a tab before the span is copied into the
+    // caret's line rather than measured: the quoted line and the caret's line open with margins of
+    // one width, so the same tab lands both at the same stop.
     //
     // A span covering more than one line is drawn against its first line and its caret stops at the
     // end of that line: what a multi-line span usually means is an unterminated something, and the
@@ -139,7 +142,7 @@ struct Diagnostic
             else
                 self.span.end - self.span.start
 
-        pad(&b, columns(line_text[0..<before]))
+        indent_like(&b, line_text[0..<before])
 
         val width = columns(line_text[before..<before + within])
 
@@ -440,6 +443,20 @@ private pad(b: *StrBuilder, n: usize)
 private pad_with(b: *StrBuilder, n: usize, c: u8)
     for _ in 0..<n
         b.push_char(char(u32(c)))
+
+// As far across as `text` reaches on a terminal: a tab is copied, so it moves to the same stop the
+// quoted line's did, and every run between tabs is padded by its display width.
+private indent_like(b: *StrBuilder, text: []const u8)
+    var from: usize = 0
+
+    for i in 0..<text.len
+        if text[i] == u8('\t') then
+            pad(b, columns(text[from..<i]))
+            b.push("\t")
+            from = i + 1
+
+    pad(b, columns(text[from..<text.len]))
+end indent_like
 
 // The `  |` that separates the message from the text it is about.
 private bar(b: *StrBuilder, gutter: usize)
