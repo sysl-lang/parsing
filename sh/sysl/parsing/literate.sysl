@@ -1,0 +1,202 @@
+module sh.sysl.parsing
+
+import sysl.buf.{Buf, buf}
+
+// A literate source: a **Markdown document whose indented blocks are the program**.
+//
+// The rules are Markdown's own, so what a renderer sets as a code block is exactly what a compiler
+// reads, and they know nothing about any language -- which file is literate is the caller's to say,
+// by its name, since nothing inside the text could:
+//
+// - **A line indented four columns or more is program text**; every other line is prose.
+// - **Consecutive indented blocks are one block.** A paragraph between two of them ends nothing, so
+//   a body may be explained a step at a time and picked up where it left off.
+// - **A fenced block (` ``` ` or `~~~`) is an illustration**, never program text however it is
+//   indented. It closes at a line of the same character, at least as long, and nothing else.
+// - **An indented block under a list item is prose** -- it belongs to the item. The item ends at the
+//   first line with content no further in than its marker; a blank line does not end it.
+//
+// **Prose is blanked rather than removed, and that is why positions still work.** The tangled text
+// has exactly as many lines as the document, and each line of program text sits on the line it was
+// written on, with the four columns that made it code taken off. So a LINE in the tangled text is
+// already a line of the document, and a COLUMN is `literate_indent` short of the document's -- which
+// is what `Diagnostic.render`'s `col_shift` adds back. Where a caret has to sit under the document's
+// own text, `untangle_span` moves a span of the tangled text onto the document.
+//
+// **Two things Markdown would accept are refused**, both because the alternative is a program
+// silently missing a piece of itself: a tab in a line's indentation (it is as wide as whatever is
+// displaying it, so the line is code in one editor and prose in another), and a fence that is never
+// closed (it would turn everything below it into an illustration).
+//
+// A line ending is `\n` or `\r\n`; the tangled text ends every line with `\n`.
+
+// How far a line has to be indented to be program text, and so how many columns a position in the
+// tangled text is short of the document's.
+const literate_indent: usize = 4
+
+// The program a literate document holds, as a source of the same name whose lines are the
+// document's lines -- or the first thing wrong with the document.
+//
+// A refusal's span is an offset into `doc`, so it renders against the document as it stands.
+tangle_literate(doc: Source) -> Result[Source, Diagnostic]
+    var out: Buf[u8] = buf()
+    var fence: []const u8 = []
+    var fence_at = Span(0, 0)
+    var list_margin: usize = 0
+    var in_list = false
+
+    for line in 1..doc.line_count()
+        val span = doc.line_span(line)
+        val text = doc.text(span)
+
+        if line > 1 then out.push(u8('\n'))
+
+        // Inside an illustration, nothing is asked of a line but whether it ends the fence.
+        if fence.len > 0
+            if closes_fence(text, fence) then fence = []
+
+            continue
+        end if
+
+        val margin = blank_run(text)
+        val blank = margin == text.len
+
+        // **A tab is refused before the four-column test rather than by failing it.** Asked after,
+        // a tab-indented line would answer "not four columns", become prose, and leave the program
+        // in silence.
+        if !blank
+            tab_within(text, margin) match
+                Some(i) -> return Err(error(Span(span.start + i, span.start + i + 1),
+                    "a tab in the indentation of a literate file — what makes a line program text is four columns of indent, and a tab is as wide as whatever happens to be displaying it, so this line is code in one editor and prose in another"))
+                None -> ()
+        end if
+
+        if in_list && !blank && margin <= list_margin then in_list = false
+
+        if in_list then continue
+
+        if margin < literate_indent && opens_fence(text[margin..<text.len])
+            fence = fence_opener(text[margin..<text.len])
+            fence_at = Span(span.start + margin, span.start + margin + fence.len)
+            continue
+        end if
+
+        if margin >= literate_indent
+            out.extend(text[literate_indent..<text.len])
+            continue
+        end if
+
+        // Only asked of a line too shallow to be program text, so a `-` or a `*` opening a line of
+        // code is never read as a bullet: four columns in, the line was code before this was asked.
+        if opens_list_item(text[margin..<text.len])
+            in_list = true
+            list_margin = margin
+        end if
+
+    if fence.len > 0
+        return Err(error(fence_at,
+            "this fence is never closed, so everything below it is an illustration and none of it is compiled — close it, or indent the lines that are meant to run"))
+
+    Ok(source(doc.name, out.view()))
+end tangle_literate
+
+// Where an offset into `tangled` -- the result of `tangle_literate(doc)` -- falls in `doc`.
+//
+// On a line of program text it is the same character, four columns further in. A line that was
+// prose is empty in the tangled text, so the one offset it has is the document line's start.
+untangle_offset(doc: Source, tangled: Source, offset: usize) -> usize
+    val line = tangled.locate(offset).line
+    val from = tangled.line_span(line)
+    val to = doc.line_span(line)
+
+    if from.is_empty() then return to.start
+
+    val moved = to.start + literate_indent + (offset - from.start)
+
+    if moved > to.end then to.end else moved
+end untangle_offset
+
+// A span of `tangled` moved onto `doc`, which is what puts a caret under the document's own text.
+untangle_span(doc: Source, tangled: Source, s: Span) -> Span =
+    Span(untangle_offset(doc, tangled, s.start), untangle_offset(doc, tangled, s.end))
+
+// How many bytes of spaces and tabs a line opens with.
+private blank_run(text: []const u8) -> usize
+    var i: usize = 0
+
+    loop
+        if i >= text.len then break
+        if text[i] != u8(' ') && text[i] != u8('\t') then break
+
+        i += 1
+
+    i
+end blank_run
+
+// Where the first tab of a line's indentation is, if there is one.
+private tab_within(text: []const u8, margin: usize) -> Option[usize]
+    for i in 0..<margin
+        if text[i] == u8('\t') then return Some(i)
+
+    None
+end tab_within
+
+private opens_fence(bare: []const u8) -> bool
+    if bare.len < 3 then return false
+
+    val c = bare[0]
+
+    (c == u8('`') || c == u8('~')) && bare[1] == c && bare[2] == c
+end opens_fence
+
+// The run of fence characters a line opens with, which a closing fence has to be at least as long as.
+private fence_opener(bare: []const u8) -> []const u8
+    var i: usize = 0
+
+    loop
+        if i >= bare.len then break
+        if bare[i] != bare[0] then break
+
+        i += 1
+
+    bare[0..<i]
+end fence_opener
+
+// Whether a line closes the fence `open` opened: the same character, at least as many of them, and
+// nothing else on the line but blanks either side.
+private closes_fence(text: []const u8, open: []const u8) -> bool
+    val first = blank_run(text)
+    var last = text.len
+
+    while last > first && (text[last - 1] == u8(' ') || text[last - 1] == u8('\t'))
+        last -= 1
+
+    if last - first < open.len then return false
+
+    for j in first..<last
+        if text[j] != open[0] then return false
+
+    true
+end closes_fence
+
+// Whether a line begins a list item: a bullet, or a number and its punctuation, followed by a space.
+private opens_list_item(bare: []const u8) -> bool
+    if bare.len < 2 then return false
+
+    val c = bare[0]
+
+    if c == u8('-') || c == u8('*') || c == u8('+') then return bare[1] == u8(' ')
+
+    var digits: usize = 0
+
+    loop
+        if digits >= bare.len then break
+        if bare[digits] < u8('0') || bare[digits] > u8('9') then break
+
+        digits += 1
+
+    if digits == 0 || bare.len <= digits + 1 then return false
+    if bare[digits] != u8('.') && bare[digits] != u8(')') then return false
+
+    bare[digits + 1] == u8(' ')
+end opens_list_item

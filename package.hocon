@@ -13,7 +13,7 @@
 // This is the block a *consumer* writes to reach this package:
 //
 //     dependencies {
-//       parsing { git = "github.com/sysl-lang/parsing", version = "0.11.0" }
+//       parsing { git = "github.com/sysl-lang/parsing", version = "0.12.0" }
 //     }
 //
 // The coordinate names the package, `parsing`; the module a program imports is `sh.sysl.parsing`.
@@ -23,7 +23,7 @@
 
 package {
   name    = "parsing"
-  version = "0.11.0"
+  version = "0.12.0"
 
   // **The oldest compiler this builds with, and it is a released one.** Three of 0.0.76's changes
   // are written into these files rather than merely available to them: a `match` standing as an
@@ -37,6 +37,14 @@ package {
   // living, so it is the first thing to notice what reading text is awkward to write.
   sysl = "0.0.76"
 }
+
+// **0.12.0 -- LITERATE SOURCES.** `tangle_literate`, `untangle_offset`, `untangle_span` and
+// `literate_indent` in `literate.sysl`: a Markdown document whose four-column-indented lines are the
+// program, by exactly the rules sysl's `.lsysl` files follow. Prose is blanked rather than removed,
+// so the tangled source has the document's line count and every line number is already right; a
+// column is `literate_indent` short, which `render`'s `col_shift` adds back. **Raised by FunL's
+// `.lfunl`**, the second language to want the format -- which is what made it generic: nothing in it
+// names a token, and which files are literate stays the caller's to say. **Compatible.**
 
 // **0.11.0 -- BINDING POWERS ARE `u16`.** `Power.left` and `Power.right`, `left_assoc`'s and
 // `right_assoc`'s argument, `pratt`'s `min_bp` and the `lbp` callback's return were `u8`, which holds

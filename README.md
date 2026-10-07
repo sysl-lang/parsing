@@ -27,8 +27,10 @@ sh/sysl/parsing/
     scope.sysl          the names a parser has to know are in scope while it is parsing
     pratt.sysl          expressions, by binding power
     diag.sysl           diagnostics, carets, and a report that truncates
+    literate.sysl       a Markdown document whose indented blocks are the program
     tests.sysl          what all of it claims, run by `sysl test .`
     tests_json.sysl     a whole JSON reader, as the proof a consumer can be written
+    tests_literate.sysl the literate rules, one test each
 package.hocon           who this package is, and what it needs of the machine
 ```
 
@@ -42,7 +44,7 @@ Name it in your project's `package.hocon` and `sysl build` fetches it:
 
 ```hocon
 dependencies {
-  parsing { git = "github.com/sysl-lang/parsing", version = "0.11.0" }
+  parsing { git = "github.com/sysl-lang/parsing", version = "0.12.0" }
 }
 ```
 
@@ -193,6 +195,25 @@ print(n match
 **Which tokens open a block is the grammar's to say, and is not guessable here.** sysl's are `match`
 and `->` and deliberately nothing else; another language's might be `:`, `do` or `of`. What this
 module owns is the bookkeeping that makes such a block possible.
+
+## Literate sources
+
+`tangle_literate(doc)` reads a Markdown document whose lines indented four columns are the program —
+sysl's `.lsysl` rules, with no language in them. Consecutive indented blocks are one block whatever
+prose sits between them; a fenced block (` ``` ` or `~~~`) is an illustration; an indented block
+under a list item is prose. A tab in the indentation and a fence never closed are refused, each at
+the line to go and look at.
+
+**Prose is blanked, not removed**, so the tangled source has exactly as many lines as the document
+and a line number needs no mapping. A column is `literate_indent` short, which `render(src,
+literate_indent)` adds back; `untangle_span(doc, tangled, span)` moves a span onto the document when
+the caret should sit under the document's own text. Which files are literate is the caller's to
+decide, by name.
+
+```
+val doc = source_of("halving.lsysl", text)
+val program = tangle_literate(doc)?     // a Source of the same name, prose blanked
+```
 
 ## What is deliberately not here
 

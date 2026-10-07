@@ -1,0 +1,165 @@
+module sh.sysl.parsing
+@tests
+
+import sysl.text.{Search, from_utf8_lossy}
+
+// What `tangle_literate` claims, rule by rule.
+
+// The tangled text, or the refusal's message.
+private tangled(text: string) -> string = tangle_literate(source_of("t.lit", text)) match
+    Ok(s) -> from_utf8_lossy(s.bytes)
+    Err(d) -> s"refused: ${d.message}"
+
+private refusal(text: string) -> Diagnostic = tangle_literate(source_of("t.lit", text)) match
+    Ok(_) -> error(Span(0, 0), "no refusal")
+    Err(d) -> d
+
+@test
+the_indented_part_is_the_program_and_prose_is_blanked()
+    assert_eq(tangled("# Title\n\nSome prose.\n\n    half(n) = n / 2\n"), "\n\n\n\nhalf(n) = n / 2\n")
+end the_indented_part_is_the_program_and_prose_is_blanked
+
+@test
+deeper_indentation_keeps_what_is_past_four_columns()
+    assert_eq(tangled("    f()\n        body\n"), "f()\n    body\n")
+end deeper_indentation_keeps_what_is_past_four_columns
+
+@test
+a_paragraph_between_two_blocks_ends_nothing()
+    val doc = "    f()\n        a\n\nWhy the next line follows.\n\n        b\n"
+
+    assert_eq(tangled(doc), "f()\n    a\n\n\n\n    b\n")
+end a_paragraph_between_two_blocks_ends_nothing
+
+@test
+a_fenced_block_is_an_illustration()
+    assert_eq(tangled("```\n    wrong()\n```\n    right()\n"), "\n\n\nright()\n")
+    assert_eq(tangled("~~~sysl\nwrong()\n~~~\n"), "\n\n\n")
+end a_fenced_block_is_an_illustration
+
+@test
+a_fence_closes_only_at_the_same_character_at_least_as_long()
+    // A longer opener is how an illustration quotes a fence.
+    val doc = "````\n```\n    inside()\n~~~~\n```` \n    outside()\n"
+
+    assert_eq(tangled(doc), "\n\n\n\n\noutside()\n")
+end a_fence_closes_only_at_the_same_character_at_least_as_long
+
+@test
+a_line_with_text_after_the_fence_does_not_close_it()
+    assert(tangled("```\n``` x\n").starts_with("refused: this fence is never closed"), "an info string closes nothing")
+end a_line_with_text_after_the_fence_does_not_close_it
+
+@test
+a_fence_inside_the_indentation_is_program_text()
+    // Four columns in, the line was code before a fence was asked about.
+    assert_eq(tangled("    ```\n    x\n    ```\n"), "```\nx\n```\n")
+end a_fence_inside_the_indentation_is_program_text
+
+@test
+an_indented_block_under_a_list_item_is_prose()
+    val doc = "- an item\n\n        example()\n\n  continued\n\nProse again.\n\n    program()\n"
+
+    assert_eq(tangled(doc), "\n\n\n\n\n\n\n\nprogram()\n")
+end an_indented_block_under_a_list_item_is_prose
+
+@test
+a_numbered_item_is_a_list_item_too()
+    assert_eq(tangled("1. step\n\n        not_code()\n"), "\n\n\n")
+    assert_eq(tangled("12) step\n        not_code()\n"), "\n\n")
+end a_numbered_item_is_a_list_item_too
+
+@test
+what_only_looks_like_a_marker_is_not_one()
+    assert_eq(tangled("-not a bullet\n\n    code()\n"), "\n\ncode()\n")
+    assert_eq(tangled("1.5 is a number\n\n    code()\n"), "\n\ncode()\n")
+end what_only_looks_like_a_marker_is_not_one
+
+@test
+a_bullet_at_four_columns_is_code()
+    assert_eq(tangled("    - x\n    * y\n"), "- x\n* y\n")
+end a_bullet_at_four_columns_is_code
+
+@test
+a_tab_in_the_indentation_is_refused_where_it_is()
+    val d = refusal("prose\n  \tcode()\n")
+
+    assert(d.message.starts_with("a tab in the indentation"), d.message)
+    assert_eq(d.span, Span(8, 9))
+end a_tab_in_the_indentation_is_refused_where_it_is
+
+@test
+a_tab_after_the_indentation_or_on_a_blank_line_is_fine()
+    assert_eq(tangled("    a\tb\n\t\n"), "a\tb\n\n")
+end a_tab_after_the_indentation_or_on_a_blank_line_is_fine
+
+@test
+a_tab_inside_a_fence_is_fine()
+    assert_eq(tangled("```\n\tx\n```\n"), "\n\n\n")
+end a_tab_inside_a_fence_is_fine
+
+@test
+an_unterminated_fence_is_refused_at_its_opening()
+    val d = refusal("    a()\n\n  ~~~\n    b()\n")
+
+    assert(d.message.starts_with("this fence is never closed"), d.message)
+    assert_eq(d.span, Span(11, 14))
+end an_unterminated_fence_is_refused_at_its_opening
+
+@test
+an_empty_document_is_an_empty_program()
+    assert_eq(tangled(""), "")
+    assert_eq(tangled("\n"), "\n")
+end an_empty_document_is_an_empty_program
+
+@test
+crlf_line_endings_are_read_and_written_as_newlines()
+    assert_eq(tangled("prose\r\n    a()\r\n    b()\r\n"), "\na()\nb()\n")
+end crlf_line_endings_are_read_and_written_as_newlines
+
+@test
+the_tangled_text_has_as_many_lines_as_the_document()
+    val docs = ["", "x", "x\n", "    a\n\nprose\n```\nq\n```\n- item\n        z\n    b", "\r\n\r\n    c\r\n"]
+
+    for text in docs
+        val doc = source_of("t.lit", text)
+        val out = tangle_literate(doc).unwrap()
+
+        assert_eq(out.line_count(), doc.line_count())
+        assert_eq(out.name, doc.name)
+end the_tangled_text_has_as_many_lines_as_the_document
+
+@test
+a_tangled_position_is_the_document_line_and_four_columns_short()
+    val doc = source_of("t.lit", "# T\n\n    val x = 1\n    val y = oops\n")
+    val out = tangle_literate(doc).unwrap()
+
+    // `oops` is at 4:13 in the document and 4:9 in the tangled text.
+    val at = out.locate(out.bytes.len - 5)
+
+    assert_eq(at, Loc(4, 9))
+    assert_eq(doc.locate(untangle_offset(doc, out, out.bytes.len - 5)), Loc(4, 13))
+
+    val d = error(Span(out.bytes.len - 5, out.bytes.len - 1), "unknown name")
+
+    assert(d.render(out, literate_indent).contains("t.lit:4:13"), d.render(out, literate_indent))
+end a_tangled_position_is_the_document_line_and_four_columns_short
+
+@test
+a_span_moved_onto_the_document_covers_the_same_text()
+    val doc = source_of("t.lit", "prose\n    f(a, b)\n")
+    val out = tangle_literate(doc).unwrap()
+    val s = untangle_span(doc, out, Span(3, 7))
+
+    assert_eq(out.text(Span(3, 7)), "a, b".bytes)
+    assert_eq(s, Span(12, 16))
+    assert_eq(doc.text(s), "a, b".bytes)
+end a_span_moved_onto_the_document_covers_the_same_text
+
+@test
+an_offset_on_a_prose_line_lands_at_the_line_start()
+    val doc = source_of("t.lit", "prose\n    f()\n")
+    val out = tangle_literate(doc).unwrap()
+
+    assert_eq(untangle_offset(doc, out, 0), 0)
+end an_offset_on_a_prose_line_lands_at_the_line_start
