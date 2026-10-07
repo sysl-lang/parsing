@@ -44,7 +44,7 @@ Name it in your project's `package.hocon` and `sysl build` fetches it:
 
 ```hocon
 dependencies {
-  parsing { git = "github.com/sysl-lang/parsing", version = "0.12.0" }
+  parsing { git = "github.com/sysl-lang/parsing", version = "0.12.1" }
 }
 ```
 
@@ -195,6 +195,20 @@ print(n match
 **Which tokens open a block is the grammar's to say, and is not guessable here.** sysl's are `match`
 and `->` and deliberately nothing else; another language's might be `:`, `do` or `of`. What this
 module owns is the bookkeeping that makes such a block possible.
+
+**A line may also continue the statement above it without a bracket.** Where the grammar knows its
+last line cannot have ended where it did — it ended on an infix operator, say — it asks
+`continues(column)` instead of `line(column)`. The answer is whether the line is deeper than the block
+the statement is in; a continuation opens and closes nothing, so the line after it is measured against
+the statement, and a body may sit to the left of the continuation:
+
+```
+every row(r) == undefined and
+      row(r) <- r
+    place(r)
+```
+
+Which tokens leave a line unfinished is again the grammar's to say.
 
 ## Literate sources
 

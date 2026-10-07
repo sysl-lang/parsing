@@ -1610,6 +1610,46 @@ the_depth_is_what_is_open()
     assert_eq(l.finish(), 0)
 end the_depth_is_what_is_open
 
+// A statement whose first line ended on an operator runs on to a deeper line, and the line after it
+// is measured against the statement, not against the continuation:
+//
+//     every a and          column 2, inside a block at 2
+//           b              column 8: continues
+//         body             column 4: opens the body
+@test
+a_continuation_line_opens_nothing()
+    var l = layout()
+
+    assert_eq(l.line(0), Same)
+    assert_eq(l.line(2), Deeper)
+    assert(l.continues(8), "deeper than the statement's block")
+    assert_eq(l.depth(), 1)
+    assert_eq(l.line(4), Deeper)
+    assert_eq(l.depth(), 2)
+end a_continuation_line_opens_nothing
+
+// A line at the statement's own column, or to its left, is not the rest of it.
+@test
+a_continuation_has_to_be_deeper()
+    var l = layout()
+
+    assert_eq(l.line(4), Deeper)
+    assert(!l.continues(4), "at the statement's column")
+    assert(!l.continues(2), "to its left")
+    assert(!l.continues(0), "at the margin")
+    assert(l.continues(5), "one column deeper")
+    assert_eq(l.depth(), 1)
+end a_continuation_has_to_be_deeper
+
+// At the outermost level a continuation needs only to be indented at all.
+@test
+a_continuation_at_the_top_level_is_any_indentation()
+    var l = layout()
+
+    assert(!l.continues(0), "the margin starts a statement")
+    assert(l.continues(1), "anything past it continues one")
+end a_continuation_at_the_top_level_is_any_indentation
+
 @test
 the_token_just_taken_can_be_read_back()
     // `previous` answers where it was; this answers what it was. A block-structured grammar needs

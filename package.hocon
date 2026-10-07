@@ -13,7 +13,7 @@
 // This is the block a *consumer* writes to reach this package:
 //
 //     dependencies {
-//       parsing { git = "github.com/sysl-lang/parsing", version = "0.12.0" }
+//       parsing { git = "github.com/sysl-lang/parsing", version = "0.12.1" }
 //     }
 //
 // The coordinate names the package, `parsing`; the module a program imports is `sh.sysl.parsing`.
@@ -23,7 +23,7 @@
 
 package {
   name    = "parsing"
-  version = "0.12.0"
+  version = "0.12.1"
 
   // **The oldest compiler this builds with, and it is a released one.** Three of 0.0.76's changes
   // are written into these files rather than merely available to them: a `match` standing as an
@@ -37,6 +37,12 @@ package {
   // living, so it is the first thing to notice what reading text is awkward to write.
   sysl = "0.0.76"
 }
+
+// **0.12.1 -- A LINE MAY CONTINUE THE ONE ABOVE IT.** `Layout.continues(column)`, asked instead of
+// `line` when the grammar says the line before cannot have ended where it did (on an infix operator,
+// say): whether the line is deeper than the statement's block. A continuation opens and closes
+// nothing, so the line after it is measured against the statement. **Raised by FunL**, whose design
+// writes n-queens' condition over two lines with no bracket around it. **Compatible.**
 
 // **0.12.0 -- LITERATE SOURCES.** `tangle_literate`, `untangle_offset`, `untangle_span` and
 // `literate_indent` in `literate.sysl`: a Markdown document whose four-column-indented lines are the

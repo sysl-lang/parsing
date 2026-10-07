@@ -287,6 +287,30 @@ struct Layout
         Shallower(closed)
     end line
 
+    // Whether a line at this column continues the statement on the line before it, asked **instead
+    // of** `line` when the grammar has said that line cannot have ended where it did.
+    //
+    // **A line ending in an infix operator has not finished its statement**, and a grammar that
+    // knows this lets the expression run on without a bracket around it:
+    //
+    //     every row(r) == undefined and
+    //           row(r) <- r
+    //         place(r)
+    //
+    // The second line continues the first; the third opens the body. **A continuation line opens and
+    // closes nothing**: it is not handed to `line`, so its column is not pushed, and the line after it
+    // is measured against the statement it continued -- which is why the body above may sit to the
+    // left of the continuation and still open a block.
+    //
+    // **The answer is whether the line is deeper than the block the statement is in.** A line at the
+    // statement's own column, or to its left, cannot be read as the rest of it, and the grammar says
+    // so; recovering by handing the line to `line` afterwards keeps the blocks in step.
+    //
+    // **Which tokens leave a line unfinished is the grammar's**, exactly as `opens_block` is: an
+    // operator in one language is a postfix or a statement terminator in another. A token that opens
+    // a block is not a continuation, and a grammar asks one question or the other.
+    continues(self, column: usize) -> bool = column > self.blocks.at(self.blocks.len() - 1).column
+
     // How many blocks the end of the input closes.
     //
     // Every open block is closed at the end of a file, which is what lets the last statement in a
