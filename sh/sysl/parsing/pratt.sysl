@@ -32,8 +32,8 @@ module sh.sysl.parsing
 //   token, and the stream, and it reads whatever it needs from there. Because it decides for itself
 //   what to read, postfix operators (`x!`), indexing (`x[i]`), calls (`f(a, b)`) and the ternary
 //   (`a ? b : c`) all fall out of it with nothing added here.
-// - `lbp`, the number per token. Anything that is not an infix operator answers 0, which is how the
-//   loop knows to stop.
+// - `lbp`, the number per token, a `u16`. Anything that is not an infix operator answers 0, which is
+//   how the loop knows to stop.
 //
 // **There is no error type here and that is deliberate.** A grammar's node type is its own, and the
 // way a real front end reports a bad expression is with a node meaning "something was wrong here" --
@@ -70,15 +70,20 @@ impl[T] TokenStream for Tokens[T]
 // level its `led` recurses at, and **the difference between the two is the associativity**: equal,
 // and a second operator of the same power stops the inner loop, so `a - b - c` is `(a - b) - c`;
 // one lower, and the inner loop takes it, so `a ^ b ^ c` is `a ^ (b ^ c)`.
+//
+// **A power is a `u16`, so there are 65,536 levels, 0 to 65535.** Most grammars use a handful, but a
+// grammar whose operators are defined at run time needs the room: ISO Prolog's `op/3` takes
+// priorities from 0 to 1200, and a level per priority, with one below for the right-hand side of a
+// right-associative operator, is more than a byte holds.
 struct Power
-    left: u8
-    right: u8
+    left: u16
+    right: u16
 
 // An operator that groups to the left, which is nearly all of them.
-left_assoc(bp: u8) -> Power = Power(bp, bp)
+left_assoc(bp: u16) -> Power = Power(bp, bp)
 
 // An operator that groups to the right: assignment, exponentiation, and the ternary's colon.
-right_assoc(bp: u8) -> Power = Power(bp, if bp == 0 then 0 else bp - 1)
+right_assoc(bp: u16) -> Power = Power(bp, if bp == 0 then 0 else bp - 1)
 
 // The expression loop.
 //
@@ -88,8 +93,8 @@ right_assoc(bp: u8) -> Power = Power(bp, if bp == 0 then 0 else bp - 1)
 //
 // The callbacks are bare arrows, so a grammar passes named functions -- which is what `led` has to
 // be anyway, since it calls back into here.
-pratt[S: TokenStream, N](s: *S, min_bp: u8, nud: (S::Token, *S) -> N, led: (N, S::Token, *S) -> N,
-        lbp: S::Token -> u8) -> Option[N]
+pratt[S: TokenStream, N](s: *S, min_bp: u16, nud: (S::Token, *S) -> N, led: (N, S::Token, *S) -> N,
+        lbp: S::Token -> u16) -> Option[N]
     s.take() match
         None -> None
         Some(first) ->

@@ -42,7 +42,7 @@ Name it in your project's `package.hocon` and `sysl build` fetches it:
 
 ```hocon
 dependencies {
-  parsing { git = "github.com/sysl-lang/parsing", version = "0.10.1" }
+  parsing { git = "github.com/sysl-lang/parsing", version = "0.11.0" }
 }
 ```
 
@@ -169,6 +169,10 @@ Associativity is the difference between two numbers and nothing else — recurse
 power and it groups to the left, one below it and it groups to the right. Prefix operators, postfix
 operators, indexing, calls and the ternary all fall out of the callbacks being free to read what they
 like, so nothing about them is in the loop.
+
+A power is a `u16`, from 0 to 65535, so a table can be computed at run time from a wider scheme than a
+handful of levels: ISO Prolog's `op/3` priorities run from 0 to 1200, lower binding tighter, and
+`left_assoc(1201 - p)` turns one into a power.
 
 ## Indentation, brackets included
 

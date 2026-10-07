@@ -2,6 +2,7 @@ module sh.sysl.parsing
 @tests
 
 import sysl.buf.{Buf, buf}
+import sysl.text.{str_builder}
 
 // What this package claims, run by `sysl test .`.
 
@@ -1021,7 +1022,7 @@ private is_plus(t: Tok) -> bool
         Plus -> true
         _ -> false
 
-private expr_lbp(t: Spanned[Tok]) -> u8 = power_of(t.value).left
+private expr_lbp(t: Spanned[Tok]) -> u16 = power_of(t.value).left
 
 private expr_nud(t: Spanned[Tok], s: *Tokens[Tok]) -> long
     t.value match
@@ -1053,7 +1054,7 @@ private expr_led(left: long, t: Spanned[Tok], s: *Tokens[Tok]) -> long
         _ -> left
 end expr_led
 
-private expr(s: *Tokens[Tok], min_bp: u8) -> long =
+private expr(s: *Tokens[Tok], min_bp: u16) -> long =
     pratt(s, min_bp, expr_nud, expr_led, expr_lbp).unwrap_or(0)
 
 private ipow(b: long, e: long) -> long
@@ -1113,6 +1114,158 @@ an_empty_stream_has_no_expression()
 
     assert_eq(pratt(&ts, 0, expr_nud, expr_led, expr_lbp), None)
 end an_empty_stream_has_no_expression
+
+// -- a table of ISO Prolog priorities --------------------------------------------------------------
+//
+// Prolog's `op/3` gives an operator a priority from 1 to 1200, where a LOWER priority binds MORE
+// tightly, so the table turns one into the other with `1201 - p`: `:-` at 1200 has power 1 and `^` at
+// 200 has power 1001. A term whose priority may be at most `P` is read at `min_bp = 1200 - P` -- the
+// whole clause at 0, an argument of a compound term (at most 999) at 201. Each operator here is one
+// byte, standing for the ISO operator named beside it, and every operand is one letter.
+
+private iso_priority(c: u8) -> u16
+    if c == u8(':') then 1200        // :-   xfx
+    elif c == u8(';') then 1100      // ;    xfy
+    elif c == u8(',') then 1000      // ,    xfy
+    elif c == u8('#') then 999       // an operator one below the comma, as a user's op/3 makes
+    elif c == u8('@') then 701       // an operator one above `=`, as a user's op/3 makes
+    elif c == u8('=') then 700       // =    xfx
+    elif c == u8('+') then 500       // +    yfx
+    elif c == u8('^') then 200       // ^    xfy
+    else 0
+end iso_priority
+
+// `xfy` reads its right side at its own priority, which is right association; `yfx` and `xfx` read it
+// one below, which is the left-associative power.
+private iso_power(c: u8) -> Power
+    val p = iso_priority(c)
+
+    if p == 0 then
+        left_assoc(0)
+    elif c == u8(';') || c == u8(',') || c == u8('#') || c == u8('^') then
+        right_assoc(1201 - p)
+    else
+        left_assoc(1201 - p)
+end iso_power
+
+private iso_lex(text: string) -> Tokens[u8]
+    var s = scanner_of(text)
+    var ts: Tokens[u8] = tokens()
+
+    loop
+        s.skip_space()
+
+        val m = s.mark()
+
+        s.next() match
+            None -> break
+            Some(c) -> ts.push(c, s.span_from(m))
+
+    ts
+end iso_lex
+
+private is_byte_close(c: u8) -> bool = c == u8(')')
+
+private is_byte_comma(c: u8) -> bool = c == u8(',')
+
+private is_byte_bracket(c: u8) -> bool = c == u8(']')
+
+private iso_lbp(t: Spanned[u8]) -> u16 = iso_power(t.value).left
+
+// A letter is an atom; `(` groups at 1200; `[` reads a list whose elements are arguments, at 999 --
+// which is what keeps the comma between them from being read as the operator.
+private iso_nud(t: Spanned[u8], s: *Tokens[u8]) -> string
+    val c = t.value
+
+    if c == u8('(') then
+        val inner = iso(s, 0)
+
+        val _ = s.accept_if(is_byte_close)
+
+        inner
+    elif c == u8('[') then
+        var b = str_builder()
+        b.push("[")
+        b.push(iso(s, 1200 - 999))
+
+        while s.accept_if(is_byte_comma).is_some()
+            b.push("|")
+            b.push(iso(s, 1200 - 999))
+
+        val _ = s.accept_if(is_byte_bracket)
+
+        b.push("]")
+        b.finish()
+    else
+        var b = str_builder()
+        b.push_char(char(u32(c)))
+        b.finish()
+end iso_nud
+
+private iso_led(left: string, t: Spanned[u8], s: *Tokens[u8]) -> string
+    val right = iso(s, iso_power(t.value).right)
+
+    var b = str_builder()
+    b.push("(")
+    b.push(left)
+    b.push(" ")
+    b.push_char(char(u32(t.value)))
+    b.push(" ")
+    b.push(right)
+    b.push(")")
+    b.finish()
+end iso_led
+
+private iso(s: *Tokens[u8], min_bp: u16) -> string =
+    pratt(s, min_bp, iso_nud, iso_led, iso_lbp).unwrap_or("")
+
+private iso_read(text: string) -> string
+    var ts = iso_lex(text)
+
+    iso(&ts, 0)
+end iso_read
+
+// A power holds a priority from the whole ISO range, and the form a table computes it in builds one.
+@test
+a_power_holds_every_iso_priority()
+    assert_eq(iso_power(u8(':')).left, 1)
+    assert_eq(iso_power(u8('^')).left, 1001)
+    assert_eq(iso_power(u8('^')).right, 1000)
+    assert_eq(right_assoc(65535).right, 65534)
+
+    val p: u16 = 1200
+
+    assert_eq(Power(1201 - p, 1201 - p).left, 1)
+end a_power_holds_every_iso_priority
+
+// Two priorities one apart are two different levels: `=` at 700 binds more tightly than `@` at 701,
+// from either side.
+@test
+adjacent_priorities_above_a_byte_are_distinct()
+    assert_eq(iso_read("a = b @ c"), "((a = b) @ c)")
+    assert_eq(iso_read("a @ b = c"), "(a @ (b = c))")
+    assert_eq(iso_read("a + b = c ^ d"), "((a + b) = (c ^ d))")
+end adjacent_priorities_above_a_byte_are_distinct
+
+@test
+iso_associativity_comes_from_the_operator_type()
+    assert_eq(iso_read("a , b , c"), "(a , (b , c))")
+    assert_eq(iso_read("a ^ b ^ c"), "(a ^ (b ^ c))")
+    assert_eq(iso_read("a + b + c"), "((a + b) + c)")
+    assert_eq(iso_read("a # b # c"), "(a # (b # c))")
+end iso_associativity_comes_from_the_operator_type
+
+// The thresholds a Prolog reader turns on: 1200 for the clause, 1100 and 1000 for the control
+// operators, and 999 for an argument, which an operator at 999 fits inside and the comma does not.
+@test
+iso_thresholds_group_the_clause()
+    assert_eq(iso_read("a : b , c ; d"), "(a : ((b , c) ; d))")
+    assert_eq(iso_read("a , b ; c , d"), "((a , b) ; (c , d))")
+    assert_eq(iso_read("a # b , c"), "((a # b) , c)")
+    assert_eq(iso_read("[a # b , c]"), "[(a # b)|c]")
+    assert_eq(iso_read("[(a , b) , c = d]"), "[(a , b)|(c = d)]")
+    assert_eq(iso_read("(a : b) , c"), "((a : b) , c)")
+end iso_thresholds_group_the_clause
 
 @test
 a_token_cursor_knows_where_it_is()

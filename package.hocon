@@ -13,7 +13,7 @@
 // This is the block a *consumer* writes to reach this package:
 //
 //     dependencies {
-//       parsing { git = "github.com/sysl-lang/parsing", version = "0.10.1" }
+//       parsing { git = "github.com/sysl-lang/parsing", version = "0.11.0" }
 //     }
 //
 // The coordinate names the package, `parsing`; the module a program imports is `sh.sysl.parsing`.
@@ -23,7 +23,7 @@
 
 package {
   name    = "parsing"
-  version = "0.10.1"
+  version = "0.11.0"
 
   // **The oldest compiler this builds with, and it is a released one.** Three of 0.0.76's changes
   // are written into these files rather than merely available to them: a `match` standing as an
@@ -37,6 +37,14 @@ package {
   // living, so it is the first thing to notice what reading text is awkward to write.
   sysl = "0.0.76"
 }
+
+// **0.11.0 -- BINDING POWERS ARE `u16`.** `Power.left` and `Power.right`, `left_assoc`'s and
+// `right_assoc`'s argument, `pratt`'s `min_bp` and the `lbp` callback's return were `u8`, which holds
+// 256 levels. ISO Prolog's `op/3` sets priorities from 0 to 1200 at run time, and a level per
+// priority needs at least 1202 ordered ones, so a table computing `Power(1201 - p, 1201 - p)` from a
+// priority was refused (`'left' of 'Power' is byte, but int was given`). **Breaking** for a grammar
+// that spells the type: an `lbp` declared `-> u8` and a `min_bp: u8` become `u16`; a table of literal
+// powers compiles unchanged.
 
 // **0.10.1 -- THE CARET SITS UNDER A TAB-INDENTED SPAN.** `Diagnostic.render` measured the text
 // before the span by display width, and a tab has none of its own -- it moves to the next stop,
