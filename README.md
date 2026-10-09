@@ -23,6 +23,7 @@ sh/sysl/parsing/
     classes.sysl        the byte tests, as predicates and as 256-bit sets
     literal.sysl        numbers, quoted text, escapes
     layout.sysl         indentation as structure, brackets included
+    markers.sysl        which open construct an end marker may close
     tokens.sysl         a value with its span, and a cursor over a lexed token list
     scope.sysl          the names a parser has to know are in scope while it is parsing
     pratt.sysl          expressions, by binding power
@@ -44,7 +45,7 @@ Name it in your project's `package.hocon` and `sysl build` fetches it:
 
 ```hocon
 dependencies {
-  parsing { git = "github.com/sysl-lang/parsing", version = "0.12.1" }
+  parsing { git = "github.com/sysl-lang/parsing", version = "0.13.0" }
 }
 ```
 
@@ -209,6 +210,31 @@ every row(r) == undefined and
 ```
 
 Which tokens leave a line unfinished is again the grammar's to say.
+
+**A line that lines up with nothing is answered `Ragged`**, and the two margins it fell between are
+there for the refusal: `left_margin()` is the block it was pulled back from, `margin()` the one it is
+still inside. A body pulled back from column 8 to column 6 inside a block at column 4 is told 8 and 4,
+and the reader sees which was meant. The levels it came down through are already closed, so a lexer
+emits their `DEDENT`s and the grammar reports one error rather than one per following line.
+
+## End markers
+
+`end while` after a block is a marker naming the construct the block belonged to, and it is checked
+where it is written. In a recursive-descent parser that is nearly always the construct being parsed —
+except where two constructs open on one line and their blocks close together:
+
+```
+val kind = if wide then n match
+    0 -> "none"
+    _ -> "some"
+end if
+```
+
+The `match` meets `end if`, which is the `if`'s to take rather than a mistake. `openers()` is the stack
+that answers it: push a construct's word and its head's line as the head is read, pop it after its
+marker, and `claim(found)` says `Mine`, `Outer` (an enclosing construct on the same line takes it) or
+`Wrong(want)` — the word the marker should have named, which is the half of the refusal a reader needs.
+Which words take a marker, and what the refusal says, are the grammar's.
 
 ## Literate sources
 

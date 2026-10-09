@@ -147,8 +147,27 @@ struct Layout
     // Whether the grammar has said that the token it just emitted opens a block. See `opens_block`.
     pending: bool
 
+    // The margin of the innermost block the last `line` closed -- the column a `Ragged` line fell
+    // short of. See `left_margin`.
+    passed: usize
+
     // How many blocks are open, not counting the outermost.
     depth(self) -> usize = self.blocks.len() - 1
+
+    // The column the innermost open block's lines start at.
+    //
+    // After a `Ragged` answer it is the margin the line went back *past*, the one a grammar names
+    // beside `left_margin` when it refuses the line: between the two, the line lines up with neither.
+    margin(self) -> usize = self.blocks.at(self.blocks.len() - 1).column
+
+    // After a `Ragged` answer, the margin of the innermost block the line closed -- the one it was
+    // pulled back from.
+    //
+    // **The two margins are what a refusal of a ragged line has to say**, because the mistake is
+    // always "this line sits between two blocks": a body pulled back from column 8 to column 6 inside
+    // a block at column 4 is told 8 and 4, and the reader sees which one was meant. It means nothing
+    // after any other answer.
+    left_margin(self) -> usize = self.passed
 
     // The bracket depth the innermost open block was opened at.
     private frame(self) -> usize = self.blocks.at(self.blocks.len() - 1).brackets
@@ -273,6 +292,7 @@ struct Layout
         var closed: usize = 0
 
         while self.blocks.len() > 1 && column < self.blocks.at(self.blocks.len() - 1).column
+            self.passed = self.blocks.at(self.blocks.len() - 1).column
             self.blocks.pop()
             closed += 1
 
@@ -331,5 +351,5 @@ layout() -> Layout
     var blocks: Buf[Block] = buf()
 
     blocks.push(Block(0, 0))
-    Layout(blocks, 0, false)
+    Layout(blocks, 0, false, 0)
 end layout

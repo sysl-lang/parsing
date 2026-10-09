@@ -1,0 +1,124 @@
+module sh.sysl.parsing
+
+import sysl.buf.{Buf, buf}
+
+// End markers: a word after a block that names the construct the block belonged to.
+//
+// Ruby, Lua, Ada, Scala 3 and sysl let a long block be closed by a line such as `end while`. **The
+// marker is checked where it is written**, which is the whole of its value -- a marker that could
+// name the wrong construct would be a comment that lies -- so a grammar reading one has to know which
+// construct it may close.
+//
+// In a recursive-descent parser that is nearly always the construct being parsed: the layout has
+// already closed the block, and the marker is the next line. **The one case where it is not** is two
+// constructs opened on one line, whose blocks close together:
+//
+//     val kind = if wide then n match
+//         0 -> "none"
+//         _ -> "some"
+//     end if
+//
+// The `match` reads its arms and then meets `end if`, which is not its marker and is not a mistake
+// either: the `if` around it began on the same line, its body ended with the `match`'s block, and it
+// is the `if`'s marker to take. **So the question a marker asks is about a stack of open constructs
+// and the lines their heads are on**, and that is what is here. Which words a marker may name, and
+// what the refusal says, are the grammar's.
+
+// One construct whose block a marker may close: the word its marker names, and the line its head
+// is on.
+struct Opener
+    word: string
+    line: usize
+
+// What a marker does, read where the innermost open construct looks for one.
+enum Claim
+    // It names the innermost construct, which takes it.
+    Mine
+    // It names an enclosing construct whose head is on the same line as the innermost one's, so the
+    // innermost leaves it for that one to take.
+    Outer
+    // It names nothing it could close here. `want` is the word the innermost construct's marker
+    // names, which is the half of the refusal a reader needs.
+    Wrong(want: string)
+end Claim
+
+impl Eq for Claim
+    eq(self, rhs: Claim) -> bool
+        self match
+            Mine ->
+                rhs match
+                    Mine -> true
+                    _ -> false
+            Outer ->
+                rhs match
+                    Outer -> true
+                    _ -> false
+            Wrong(a) ->
+                rhs match
+                    Wrong(b) -> a == b
+                    _ -> false
+    end eq
+
+impl Display for Claim
+    display(self, out: *Writer, fmt: FormatSpec)
+        val text = self match
+            Mine -> "mine"
+            Outer -> "an outer construct's"
+            Wrong(want) -> s"wrong, wanting '${want}'"
+
+        display_str(text, out, fmt)
+    end display
+
+// The constructs open where the parser is, outermost first.
+//
+// **A grammar pushes a construct as it reads its head and pops it after its marker** -- or after the
+// place a marker would have been, there being none. Constructs that take no marker need not be
+// pushed at all: only the ones that can share a line with another matter, and a marker naming a word
+// nobody pushed is answered `Wrong`.
+struct Openers
+    open: Buf[Opener]
+
+    // How many constructs are open, which is what `truncate` takes back to after a recovery.
+    depth(self) -> usize = self.open.len()
+
+    push(*self, word: string, line: usize)
+        self.open.push(Opener(word, line))
+
+    // The innermost construct is closed. With none open it does nothing, so a parser recovering
+    // from a mistake cannot drive the stack below empty.
+    pop(*self)
+        if !self.open.is_empty() then self.open.pop()
+
+    // Back to `depth` open constructs, which is how a parser that abandoned a construct midway puts
+    // the stack back where it found it.
+    truncate(*self, depth: usize)
+        while self.open.len() > depth
+            self.open.pop()
+
+    // What a marker naming `found` does where the innermost construct reads one.
+    //
+    // With nothing open there is no construct to close, and the answer is `Wrong("")`.
+    claim(self, found: string) -> Claim
+        if self.open.is_empty() then return Wrong("")
+
+        val last = self.open.len() - 1
+        val inner = self.open.at(last)
+
+        if inner.word == found then return Mine
+
+        var i = last
+
+        while i > 0
+            i -= 1
+
+            val o = self.open.at(i)
+
+            if o.line != inner.line then break
+            if o.word == found then return Outer
+
+        Wrong(inner.word)
+    end claim
+end Openers
+
+// No construct open.
+openers() -> Openers = Openers(buf())

@@ -1411,6 +1411,118 @@ a_ragged_line_says_how_many_blocks_it_closed()
     assert_eq(l.depth(), 0)
 end a_ragged_line_says_how_many_blocks_it_closed
 
+// A refusal of a ragged line names the two margins it fell between: the one it was pulled back from
+// and the one it is still inside.
+@test
+a_ragged_line_knows_the_two_margins_it_fell_between()
+    var l = layout()
+
+    l.line(0)
+    l.line(4)
+    l.line(8)
+
+    assert_eq(l.line(6), Ragged(1))
+    assert_eq(l.left_margin(), 8)
+    assert_eq(l.margin(), 4)
+end a_ragged_line_knows_the_two_margins_it_fell_between
+
+// Through several levels the margin it was pulled back from is the nearest one above it, not the
+// innermost block that was open.
+@test
+a_ragged_line_through_several_levels_names_the_nearest_margin_above_it()
+    var l = layout()
+
+    l.line(0)
+    l.line(4)
+    l.line(8)
+    l.line(12)
+
+    assert_eq(l.line(2), Ragged(3))
+    assert_eq(l.left_margin(), 4)
+    assert_eq(l.margin(), 0)
+end a_ragged_line_through_several_levels_names_the_nearest_margin_above_it
+
+@test
+a_line_back_at_an_open_margin_is_not_ragged()
+    var l = layout()
+
+    l.line(0)
+    l.line(4)
+    l.line(8)
+
+    assert_eq(l.line(4), Shallower(1))
+    assert_eq(l.margin(), 4)
+end a_line_back_at_an_open_margin_is_not_ragged
+
+// -- end markers ------------------------------------------------------------------------------
+
+@test
+a_marker_naming_the_innermost_construct_is_its_own()
+    var o = openers()
+
+    o.push("while", 1)
+    o.push("for", 2)
+
+    assert_eq(o.claim("for"), Mine)
+    o.pop()
+    assert_eq(o.claim("while"), Mine)
+end a_marker_naming_the_innermost_construct_is_its_own
+
+// `end for` closing a `while`: the refusal needs the word the marker should have named.
+@test
+a_marker_naming_another_construct_is_wrong_and_says_which_it_wanted()
+    var o = openers()
+
+    o.push("while", 1)
+
+    assert_eq(o.claim("for"), Wrong("while"))
+    assert_eq(o.claim("while"), Mine)
+
+// An enclosing construct on an earlier line has a block of its own still open, so its marker cannot
+// be here -- the inner construct's refusal stands.
+@test
+a_marker_naming_a_construct_on_an_earlier_line_is_wrong()
+    var o = openers()
+
+    o.push("if", 1)
+    o.push("while", 2)
+
+    assert_eq(o.claim("if"), Wrong("while"))
+
+// `val k = if wide then n match` -- the `match`'s block closes the `if`'s body too, so `end if` after
+// the arms is the `if`'s to take and not a mistake.
+@test
+a_marker_naming_a_construct_opened_on_the_same_line_is_left_for_it()
+    var o = openers()
+
+    o.push("k", 3)
+    o.push("if", 3)
+    o.push("match", 3)
+
+    assert_eq(o.claim("if"), Outer)
+    assert_eq(o.claim("k"), Outer)
+    assert_eq(o.claim("while"), Wrong("match"))
+    o.pop()
+    assert_eq(o.claim("if"), Mine)
+end a_marker_naming_a_construct_opened_on_the_same_line_is_left_for_it
+
+@test
+the_stack_is_put_back_after_a_recovery_and_never_goes_below_empty()
+    var o = openers()
+
+    o.push("if", 1)
+    o.push("for", 2)
+    o.push("match", 3)
+    o.truncate(1)
+
+    assert_eq(o.depth(), 1)
+    assert_eq(o.claim("if"), Mine)
+    o.pop()
+    o.pop()
+    assert_eq(o.depth(), 0)
+    assert_eq(o.claim("if"), Wrong(""))
+end the_stack_is_put_back_after_a_recovery_and_never_goes_below_empty
+
 // Without this rule `f(a,\n  b)` is a syntax error in every language that has both features.
 @test
 a_newline_inside_brackets_means_nothing()

@@ -13,7 +13,7 @@
 // This is the block a *consumer* writes to reach this package:
 //
 //     dependencies {
-//       parsing { git = "github.com/sysl-lang/parsing", version = "0.12.1" }
+//       parsing { git = "github.com/sysl-lang/parsing", version = "0.13.0" }
 //     }
 //
 // The coordinate names the package, `parsing`; the module a program imports is `sh.sysl.parsing`.
@@ -23,7 +23,7 @@
 
 package {
   name    = "parsing"
-  version = "0.12.1"
+  version = "0.13.0"
 
   // **The oldest compiler this builds with, and it is a released one.** Three of 0.0.76's changes
   // are written into these files rather than merely available to them: a `match` standing as an
@@ -37,6 +37,17 @@ package {
   // living, so it is the first thing to notice what reading text is awkward to write.
   sysl = "0.0.76"
 }
+
+// **0.13.0 -- END MARKERS, AND THE TWO MARGINS A RAGGED LINE FELL BETWEEN.** `markers.sysl`'s
+// `openers()`: a stack of open constructs, each a marker word and its head's line, whose
+// `claim(found)` answers whether a marker such as `end for` is the innermost construct's (`Mine`), an
+// enclosing construct's opened on the same line, whose block closed with this one (`Outer`), or
+// neither (`Wrong(want)`, naming the word the marker should have been). And `Layout.margin()` and
+// `Layout.left_margin()`: after `Ragged`, the margin the line is still inside and the one it was
+// pulled back from, which is what a refusal of the line names. **Raised by the self-hosted sysl
+// compiler**, which now refuses a ragged line and a mismatched marker outright. `Layout` gains a
+// field, so a consumer constructing one by hand rather than through `layout()` adds a `0`; nothing in
+// the org does. **Compatible** otherwise: `line` answers exactly what it did.
 
 // **0.12.1 -- A LINE MAY CONTINUE THE ONE ABOVE IT.** `Layout.continues(column)`, asked instead of
 // `line` when the grammar says the line before cannot have ended where it did (on an infix operator,
