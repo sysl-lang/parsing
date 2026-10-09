@@ -47,7 +47,9 @@ package {
 // pulled back from, which is what a refusal of the line names. **Raised by the self-hosted sysl
 // compiler**, which now refuses a ragged line and a mismatched marker outright. `Layout` gains a
 // field, so a consumer constructing one by hand rather than through `layout()` adds a `0`; nothing in
-// the org does. **Compatible** otherwise: `line` answers exactly what it did.
+// the org does. **Compatible** otherwise: `line` answers exactly what it did. Two `if` values in
+// `diag.sysl` and `literal.sysl` whose `else` sat under the `if` -- a column no block opened -- are
+// re-laid as a block of their own, which a compiler refusing ragged lines requires.
 
 // **0.12.1 -- A LINE MAY CONTINUE THE ONE ABOVE IT.** `Layout.continues(column)`, asked instead of
 // `line` when the grammar says the line before cannot have ended where it did (on an infix operator,

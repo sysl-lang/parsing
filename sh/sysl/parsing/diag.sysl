@@ -137,10 +137,9 @@ struct Diagnostic
         // it the two slices below read past the end of the line and the render is a crash, in the
         // one case -- a parser over Windows text -- that a report is most needed for.
         val before = if offset > line_text.len then line_text.len else offset
-        val within = if self.span.end - self.span.start > line_text.len - before then
-                line_text.len - before
-            else
-                self.span.end - self.span.start
+        val within =
+            if self.span.end - self.span.start > line_text.len - before then line_text.len - before
+            else self.span.end - self.span.start
 
         indent_like(&b, line_text[0..<before])
 

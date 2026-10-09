@@ -278,14 +278,11 @@ read_integer(s: *Scanner) -> Result[ulong, LitError]
     if s.peek() == Some(u8('0')) then
         s.peek_at(1) match
             Some(p) ->
-                val base = if p == u8('x') || p == u8('X') then
-                        16
-                    elif p == u8('o') || p == u8('O') then
-                        8
-                    elif p == u8('b') || p == u8('B') then
-                        2
-                    else
-                        0
+                val base =
+                    if p == u8('x') || p == u8('X') then 16
+                    elif p == u8('o') || p == u8('O') then 8
+                    elif p == u8('b') || p == u8('B') then 2
+                    else 0
 
                 if base != 0 then
                     val from = s.offset
@@ -330,14 +327,11 @@ read_number(s: *Scanner) -> Result[Number, LitError]
     if s.peek() == Some(u8('0')) then
         s.peek_at(1) match
             Some(p) ->
-                val base = if p == u8('x') || p == u8('X') then
-                        16
-                    elif p == u8('o') || p == u8('O') then
-                        8
-                    elif p == u8('b') || p == u8('B') then
-                        2
-                    else
-                        0
+                val base =
+                    if p == u8('x') || p == u8('X') then 16
+                    elif p == u8('o') || p == u8('O') then 8
+                    elif p == u8('b') || p == u8('B') then 2
+                    else 0
 
                 if base != 0 then
                     val from = s.offset
