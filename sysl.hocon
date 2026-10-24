@@ -13,7 +13,7 @@
 // This is the block a *consumer* writes to reach this package:
 //
 //     dependencies {
-//       parsing { git = "github.com/sysl-lang/parsing", version = "0.13.0" }
+//       parsing { git = "github.com/sysl-lang/parsing", version = "0.13.1" }
 //     }
 //
 // The coordinate names the package, `parsing`; the module a program imports is `sh.sysl.parsing`.
@@ -23,7 +23,7 @@
 
 package {
   name    = "parsing"
-  version = "0.13.0"
+  version = "0.13.1"
 
   // **The oldest compiler this builds with, and it is a released one.** Three of 0.0.76's changes
   // are written into these files rather than merely available to them: a `match` standing as an
@@ -35,8 +35,12 @@ package {
   // **This package is what raised all three.** Writing it is what found them, which is the argument
   // for a package existing at all: the toolkit is the first thing in the org that reads text for a
   // living, so it is the first thing to notice what reading text is awkward to write.
-  sysl = "0.0.76"
+  sysl = "0.5.7"
 }
+
+// **0.13.1 -- THE MANIFEST IS `sysl.hocon`.** It was still named `package.hocon`, which sysl 0.5
+// reads with a warning on every build of every package that depends on this one. The file is renamed
+// and the compiler floor is the release this was gated with. **No API change.**
 
 // **0.13.0 -- END MARKERS, AND THE TWO MARGINS A RAGGED LINE FELL BETWEEN.** `markers.sysl`'s
 // `openers()`: a stack of open constructs, each a marker word and its head's line, whose

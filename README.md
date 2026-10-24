@@ -32,7 +32,7 @@ sh/sysl/parsing/
     tests.sysl          what all of it claims, run by `sysl test .`
     tests_json.sysl     a whole JSON reader, as the proof a consumer can be written
     tests_literate.sysl the literate rules, one test each
-package.hocon           who this package is, and what it needs of the machine
+sysl.hocon              who this package is, and what it needs of the machine
 ```
 
 The module is **`sh.sysl.parsing`**, and the three directories are that name: a dotted module name
@@ -41,16 +41,16 @@ claims a name nobody else will mint rather than the top-level word `parsing`.
 
 ## Using it
 
-Name it in your project's `package.hocon` and `sysl build` fetches it:
+Name it in your project's `sysl.hocon` and `sysl build` fetches it:
 
 ```hocon
 dependencies {
-  parsing { git = "github.com/sysl-lang/parsing", version = "0.13.0" }
+  parsing { git = "github.com/sysl-lang/parsing", version = "0.13.1" }
 }
 ```
 
 The coordinate is an identity rather than a URL, so it carries no `https://`, and `version` is the
-tag `v0.3.0` here. It needs sysl 0.0.76 or newer, for the reason `package.hocon` gives.
+tag `v0.13.1` here. It needs sysl 0.5.7 or newer; `sysl.hocon` says why.
 
 Or build it into an artifact and compile against that, which needs no fetching:
 
