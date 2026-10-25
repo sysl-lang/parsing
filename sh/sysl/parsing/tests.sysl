@@ -298,7 +298,7 @@ end a_long_integer_part_with_a_fraction_rounds_instead_of_overflowing
 an_integer_with_no_fraction_still_overflows()
     num_of("99999999999999999999") match
         Ok(_) -> assert(false, "no fraction to save it")
-        Err(e) -> assert_eq(str(e), "the number is too large to hold")
+        Err(e) -> assert_eq(e.to_string(), "the number is too large to hold")
 end an_integer_with_no_fraction_still_overflows
 
 // The dot belongs to the number only when a digit follows it, which is what keeps `0..<n` and
@@ -410,7 +410,7 @@ a_refusal_underlines_what_was_wrong()
         // And what it says is about characters, since that is what the reader was asked for.
         Err(e) ->
             assert_eq(where(e), Span(0, 2))
-            assert_eq(str(e), "not a character")
+            assert_eq(e.to_string(), "not a character")
 
     var x = scanner_of("99999999999999999999999")
 

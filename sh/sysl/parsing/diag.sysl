@@ -100,11 +100,11 @@ struct Diagnostic
     render(self, src: Source, col_shift: usize = 0) -> string
         val from = src.locate(self.span.start)
         val line_text = src.line_text(from.line)
-        val number = str(from.line)
+        val number = from.line.to_string()
         val gutter = number.bytes.len
         var b = str_builder()
 
-        b.push(str(self.severity))
+        b.push(self.severity.to_string())
         b.push(": ")
         b.push(self.message)
         b.push("\n")
@@ -114,7 +114,7 @@ struct Diagnostic
         b.push(":")
         b.push(number)
         b.push(":")
-        b.push(str(from.col + col_shift))
+        b.push((from.col + col_shift).to_string())
         b.push("\n")
         bar(&b, gutter)
         b.push("\n")

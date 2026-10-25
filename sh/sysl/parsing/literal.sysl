@@ -112,8 +112,8 @@ impl Eq for Number
 impl Display for Number
     display(self, out: *Writer, fmt: FormatSpec)
         self match
-            Int(v) -> display_str(str(v), out, fmt)
-            Real(x) -> display_str(str(x), out, fmt)
+            Int(v) -> display_str(v.to_string(), out, fmt)
+            Real(x) -> display_str(x.to_string(), out, fmt)
     end display
 
 // One byte, as a span: the smallest thing there is to underline, and what a mistake about a single

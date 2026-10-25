@@ -78,7 +78,7 @@ private json_number(r: *Reader) -> Result[Json, Diagnostic]
     val negative = r.s.accept(u8('-'))
 
     read_number(&r.s) match
-        Err(e) -> Err(error(where(e), str(e)))
+        Err(e) -> Err(error(where(e), e.to_string()))
         Ok(n) ->
             val span = r.s.span_from(m)
             val text = r.src.text(span)
@@ -136,7 +136,7 @@ private json_string(r: *Reader) -> Result[string, Diagnostic]
                             .with_note("they are \\\" \\\\ \\/ \\b \\f \\n \\r \\t and \\uXXXX"))
 
                     read_escape(&r.s) match
-                        Err(e) -> return Err(error(where(e), str(e)))
+                        Err(e) -> return Err(error(where(e), e.to_string()))
                         Ok(ch) -> b.push_char(ch)
                 elif c < 32 then
                     return Err(error(Span(r.s.offset, r.s.offset + 1),
@@ -232,7 +232,7 @@ private show(v: &Json) -> string
     *v match
         Null -> "null"
         Bool(b) -> if b then "true" else "false"
-        Num(x) -> str(x)
+        Num(x) -> x.to_string()
         Str(t) -> s"\"$t\""
         Arr(items) ->
             var out = "["
