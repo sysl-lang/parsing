@@ -13,7 +13,7 @@
 // This is the block a *consumer* writes to reach this package:
 //
 //     dependencies {
-//       parsing { git = "github.com/sysl-lang/parsing", version = "0.13.3" }
+//       parsing { git = "github.com/sysl-lang/parsing", version = "0.14.0" }
 //     }
 //
 // The coordinate names the package, `parsing`; the module a program imports is `sh.sysl.parsing`.
@@ -23,7 +23,7 @@
 
 package {
   name    = "parsing"
-  version = "0.13.3"
+  version = "0.14.0"
 
   // **The oldest compiler this builds with, and it is a released one.** Three of 0.0.76's changes
   // are written into these files rather than merely available to them: a `match` standing as an
@@ -37,6 +37,12 @@ package {
   // living, so it is the first thing to notice what reading text is awkward to write.
   sysl = "0.8.0"
 }
+
+// **0.14.0 -- NAMES ABOVE ASCII, AND NUMBERS WITHOUT SEPARATORS.** `Scanner.read_ident_wide` reads an
+// identifier whose ASCII bytes are answered by two `ByteSet`s and whose other characters are decoded
+// and answered by `u32 -> bool` predicates. `read_plain_digits` and `read_plain_number` are
+// `read_digits` and `read_number` for a format with no `_` separators: the `_` ends the run and is
+// left for the caller. **Additive; no API change to existing names.**
 
 // **0.13.3 -- AN INVERTED SPAN NO LONGER OVERFLOWS IN `Diagnostic.render`.** A span whose end lies
 // before its start made `end - start` underflow `usize`, which traps in a 0.8.0 debug build (a
