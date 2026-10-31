@@ -136,7 +136,15 @@ private val ulong_max: ulong = 18446744073709551615
 // **An underscore must sit between two digits.** `1_000` is a number and `_1`, `1_` and `1__0` are
 // not, which is the rule Rust, Ada and sysl itself all keep: a separator that may lead or trail is
 // one that can be typed by accident and read as nothing.
-read_digits(s: *Scanner, base: int) -> Result[ulong, LitError]
+read_digits(s: *Scanner, base: int) -> Result[ulong, LitError] = read_digits_in(s, base, true)
+
+// The same run **with no separators**: an `_` is not a digit and not a separator, so it ends the run
+// where it stands and is left for the caller. `1_000` reads as `1` with the cursor on the `_`, and
+// `_1` is `NoDigits`. This is the form a format whose numbers have no underscores (JSON, XML
+// character references) wants, rather than reading `read_digits`'s span and refusing it afterwards.
+read_plain_digits(s: *Scanner, base: int) -> Result[ulong, LitError] = read_digits_in(s, base, false)
+
+private read_digits_in(s: *Scanner, base: int, sep: bool) -> Result[ulong, LitError]
     val start = s.offset
     var v: ulong = 0
     var digits: usize = 0
@@ -144,7 +152,7 @@ read_digits(s: *Scanner, base: int) -> Result[ulong, LitError]
     loop
         s.peek() match
             Some(c) ->
-                if c == u8('_') then
+                if sep && c == u8('_') then
                     if digits == 0 then return Err(BadDigit(one_at(s.offset)))
 
                     s.bump()
@@ -178,7 +186,7 @@ read_digits(s: *Scanner, base: int) -> Result[ulong, LitError]
             None -> break
 
     if digits == 0 then Err(NoDigits(point(start))) else Ok(v)
-end read_digits
+end read_digits_in
 
 // The same run, checked for its SHAPE alone -- the underscore rule and "at least one digit" -- and
 // not turned into a value.
@@ -190,14 +198,16 @@ end read_digits
 // twenty-one digits read as a 64-bit integer do not fit one, and no such integer was ever going to be
 // built from them. A real literal has to round to the nearest double whatever its length, the way
 // every other language reads one.
-skip_digits(s: *Scanner, base: int) -> Result[unit, LitError]
+skip_digits(s: *Scanner, base: int) -> Result[unit, LitError] = skip_digits_in(s, base, true)
+
+private skip_digits_in(s: *Scanner, base: int, sep: bool) -> Result[unit, LitError]
     val start = s.offset
     var digits: usize = 0
 
     loop
         s.peek() match
             Some(c) ->
-                if c == u8('_') then
+                if sep && c == u8('_') then
                     if digits == 0 then return Err(BadDigit(one_at(s.offset)))
 
                     s.bump()
@@ -215,7 +225,7 @@ skip_digits(s: *Scanner, base: int) -> Result[unit, LitError]
             None -> break
 
     if digits == 0 then Err(NoDigits(point(start))) else Ok(())
-end skip_digits
+end skip_digits_in
 
 // A run of digits whose OWN overflow is not yet a mistake -- `read_number`'s leading decimal run,
 // which may turn out to be the integer part of a real once the caller has seen what follows it.
@@ -230,7 +240,7 @@ end DigitRun
 // reporting an overflow -- so a caller that decides the run WAS a plain integer can report the same
 // `Overflow(span)` `read_digits` would have, and a caller that finds a `.` or an `e` after it can
 // ignore the flag, the real value coming from `to_real` over the whole span rather than from `v`.
-private read_digit_run(s: *Scanner, base: int) -> Result[DigitRun, LitError]
+private read_digit_run(s: *Scanner, base: int, sep: bool) -> Result[DigitRun, LitError]
     val start = s.offset
     var v: ulong = 0
     var digits: usize = 0
@@ -239,7 +249,7 @@ private read_digit_run(s: *Scanner, base: int) -> Result[DigitRun, LitError]
     loop
         s.peek() match
             Some(c) ->
-                if c == u8('_') then
+                if sep && c == u8('_') then
                     if digits == 0 then return Err(BadDigit(one_at(s.offset)))
 
                     s.bump()
@@ -318,7 +328,14 @@ end read_integer
 // NUL-terminated copy of that -- three pieces of heap for a value whose text is a dozen bytes. The
 // family grew a `[]const u8` form, so the buffer above goes straight to it and the terminator is
 // written into a stack array.
-read_number(s: *Scanner) -> Result[Number, LitError]
+read_number(s: *Scanner) -> Result[Number, LitError] = read_number_in(s, true)
+
+// `read_number` for a format with no digit separators: every run of digits ends at an `_`, which is
+// left unread, so `1_000` is the integer `1` with the cursor on the underscore and `1.5_5` is `1.5`.
+// The caller that wants `_` refused tests `s.peek()` after the number.
+read_plain_number(s: *Scanner) -> Result[Number, LitError] = read_number_in(s, false)
+
+private read_number_in(s: *Scanner, sep: bool) -> Result[Number, LitError]
     val start = s.offset
 
     // A radix-prefixed literal is an integer and nothing else: `0x1.8p3` is C's hexadecimal float
@@ -338,7 +355,7 @@ read_number(s: *Scanner) -> Result[Number, LitError]
 
                     s.skip(2)
 
-                    return read_digits(s, base) match
+                    return read_digits_in(s, base, sep) match
                         Err(NoDigits(_)) -> Err(NoDigits(Span(from, from + 2)))
                         Err(e) -> Err(e)
                         Ok(v) -> Ok(Int(v))
@@ -350,7 +367,7 @@ read_number(s: *Scanner) -> Result[Number, LitError]
     // `ulong` in front of a `.` or an `e` is not yet a mistake.
     var real_shaped = false
 
-    read_digit_run(s, 10) match
+    read_digit_run(s, 10, sep) match
         Ok(run) ->
             if s.peek() == Some(u8('.')) then
                 s.peek_at(1) match
@@ -359,7 +376,7 @@ read_number(s: *Scanner) -> Result[Number, LitError]
                             real_shaped = true
                             s.bump()
 
-                            skip_digits(s, 10) match
+                            skip_digits_in(s, 10, sep) match
                                 Err(e) -> return Err(e)
                                 Ok(_) -> ()
                     None -> ()
@@ -377,7 +394,7 @@ read_number(s: *Scanner) -> Result[Number, LitError]
                                     real_shaped = true
                                     s.skip(if signed then 2 else 1)
 
-                                    skip_digits(s, 10) match
+                                    skip_digits_in(s, 10, sep) match
                                         Err(er) -> return Err(er)
                                         Ok(_) -> ()
                             None -> ()
@@ -396,7 +413,7 @@ read_number(s: *Scanner) -> Result[Number, LitError]
                 Some(x) -> Ok(Real(x))
                 None -> Err(BadReal(span))
         Err(e) -> Err(e)
-end read_number
+end read_number_in
 
 // The text of a float through the library's one converter, with any separators taken out.
 //

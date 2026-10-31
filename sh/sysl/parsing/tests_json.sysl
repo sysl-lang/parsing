@@ -14,8 +14,9 @@ import sysl.text.str_builder
 //
 // **Where JSON's rules are narrower than the readers', the narrowing is done here**, which is the
 // package's whole position on policy: `read_escape` knows the C family's escapes and JSON has eight
-// of them, so this checks the byte after the backslash itself; `read_number` reads underscores and
-// radix prefixes and JSON has neither, so this looks at the text it consumed and refuses those.
+// of them, so this checks the byte after the backslash itself; `read_plain_number` stops at an
+// underscore and reads radix prefixes, and JSON has neither, so this refuses the underscore it
+// stopped at and looks at the text it consumed for the prefix.
 // Neither is a flag on the reader.
 
 private enum Json
@@ -77,16 +78,16 @@ private json_number(r: *Reader) -> Result[Json, Diagnostic]
     val m = r.s.mark()
     val negative = r.s.accept(u8('-'))
 
-    read_number(&r.s) match
+    read_plain_number(&r.s) match
         Err(e) -> Err(error(where(e), e.to_string()))
         Ok(n) ->
+            // The plain reader stops at an underscore instead of reading through it.
+            if r.s.peek() == Some(u8('_')) then
+                return Err(error(Span(r.s.offset, r.s.offset + 1), "a number may not have underscores in it"))
+
             val span = r.s.span_from(m)
             val text = r.src.text(span)
             val digits = if negative then text[1..<text.len] else text
-
-            for i in 0..<digits.len
-                if digits[i] == u8('_') then
-                    return Err(error(span, "a number may not have underscores in it"))
 
             if digits.len > 1 && digits[0] == u8('0') then
                 if is_digit(digits[1]) then

@@ -314,6 +314,53 @@ struct Scanner
         Some(self.span_from(from))
     end read_ident
 
+    // An identifier whose characters may be above ASCII: XML names, Unicode identifiers.
+    //
+    // **The ASCII bytes are answered by a `ByteSet` and everything else by a decoded character**, so
+    // the common case costs no decode and no call. A byte below 0x80 is tested against `start_set`
+    // (for the first character) or `cont_set`; a byte at or above it begins a UTF-8 character that
+    // is decoded and handed, as a code point, to `wide_start` or `wide_cont`. `None` and no movement
+    // where the first character is refused. The span is the name's own text.
+    //
+    // **Malformed UTF-8 ends the name and is not consumed**, the same way a character the predicate
+    // refuses does, so the caller's next step meets the bad bytes where they are. (`next_char`
+    // reports them as U+FFFD; a real U+FFFD in the input is told apart by its three bytes.)
+    read_ident_wide(*self, start_set: ByteSet, cont_set: ByteSet, wide_start: u32 -> bool, wide_cont: u32 -> bool) -> Option[Span]
+        val from = self.at
+        var first = true
+
+        loop
+            val b = self.peek() match
+                Some(b) -> b
+                None -> break
+
+            if b < 128 then
+                val ok = if first then start_set.has(b) else cont_set.has(b)
+
+                if !ok then break
+
+                self.at += 1
+            else
+                var cs = chars_of(self.rest())
+                val c = u32(cs.next().unwrap())
+
+                if c == 0xFFFD then
+                    val r = self.rest()
+                    val real = r.len >= 3 && r[0] == 0xEF && r[1] == 0xBF && r[2] == 0xBD
+
+                    if !real then break
+
+                val ok = if first then wide_start(c) else wide_cont(c)
+
+                if !ok then break
+
+                self.at += cs.offset
+
+            first = false
+
+        if first then None else Some(self.span_from(from))
+    end read_ident_wide
+
     // A keyword, **only where it is the whole word**.
     //
     // `accept_seq("if".bytes)` matches the first two bytes of `ifx` and is how a lexer comes to have

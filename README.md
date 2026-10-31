@@ -88,6 +88,15 @@ text format on the machine is ASCII, and no ASCII byte can appear inside a UTF-8
 `next_char` where the *content* is text — an identifier that may be Greek, a string being copied out
 — and pay for one decode per character that needed one rather than one per byte of the file.
 
+`read_ident_wide(start_set, cont_set, wide_start, wide_cont)` is that reading done once: ASCII bytes
+are answered by two `ByteSet`s and every other character is decoded and answered by a `u32 -> bool`
+over its code point (XML names, Unicode identifiers). A character the predicates refuse, or malformed
+UTF-8, ends the name unconsumed.
+
+Numbers: `read_digits` and `read_number` accept `_` between digits; `read_plain_digits` and
+`read_plain_number` are the same readers for a format with no separators, stopping at an `_` and
+leaving it for the caller.
+
 ## Saying where the mistake was
 
 ```sysl
