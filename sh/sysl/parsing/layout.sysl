@@ -158,7 +158,7 @@ struct Layout
     //
     // After a `Ragged` answer it is the margin the line went back *past*, the one a grammar names
     // beside `left_margin` when it refuses the line: between the two, the line lines up with neither.
-    margin(self) -> usize = self.blocks.at(self.blocks.len() - 1).column
+    margin(self) -> usize = self.blocks[self.blocks.len() - 1].column
 
     // After a `Ragged` answer, the margin of the innermost block the line closed -- the one it was
     // pulled back from.
@@ -170,7 +170,7 @@ struct Layout
     left_margin(self) -> usize = self.passed
 
     // The bracket depth the innermost open block was opened at.
-    private frame(self) -> usize = self.blocks.at(self.blocks.len() - 1).brackets
+    private frame(self) -> usize = self.blocks[self.blocks.len() - 1].brackets
 
     // Whether a newline means anything where the cursor is.
     //
@@ -279,7 +279,7 @@ struct Layout
 
         self.pending = false
 
-        val top = self.blocks.at(self.blocks.len() - 1).column
+        val top = self.blocks[self.blocks.len() - 1].column
 
         if column > top then
             // The block records the bracket depth it opened at, which is what makes its own lines
@@ -291,8 +291,8 @@ struct Layout
 
         var closed: usize = 0
 
-        while self.blocks.len() > 1 && column < self.blocks.at(self.blocks.len() - 1).column
-            self.passed = self.blocks.at(self.blocks.len() - 1).column
+        while self.blocks.len() > 1 && column < self.blocks[self.blocks.len() - 1].column
+            self.passed = self.blocks[self.blocks.len() - 1].column
             self.blocks.pop()
             closed += 1
 
@@ -302,7 +302,7 @@ struct Layout
         // one error. Leaving the stack as it was would have made every following line ragged too.
         // The count of what was popped goes with the answer, so a lexer closes exactly what the
         // layout closed.
-        if column != self.blocks.at(self.blocks.len() - 1).column then return Ragged(closed)
+        if column != self.blocks[self.blocks.len() - 1].column then return Ragged(closed)
 
         Shallower(closed)
     end line
@@ -329,7 +329,7 @@ struct Layout
     // **Which tokens leave a line unfinished is the grammar's**, exactly as `opens_block` is: an
     // operator in one language is a postfix or a statement terminator in another. A token that opens
     // a block is not a continuation, and a grammar asks one question or the other.
-    continues(self, column: usize) -> bool = column > self.blocks.at(self.blocks.len() - 1).column
+    continues(self, column: usize) -> bool = column > self.blocks[self.blocks.len() - 1].column
 
     // How many blocks the end of the input closes.
     //

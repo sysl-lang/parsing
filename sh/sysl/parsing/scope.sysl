@@ -42,7 +42,7 @@ struct ScopedNames
         self.open()
 
         for i in 0..<names.len()
-            self.names.push(names.at(i))
+            self.names.push(names[i])
 
     // One more name in the region currently open.
     //
@@ -71,7 +71,7 @@ struct ScopedNames
 
             i -= 1
 
-            if self.names.at(i) == name then return true
+            if self.names[i] == name then return true
     end has
 
     // How many names are in scope, which is what a test asserts and what a parser can use to notice

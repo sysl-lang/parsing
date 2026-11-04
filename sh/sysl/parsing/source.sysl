@@ -128,7 +128,7 @@ struct Source
         // start and a miss is one line further on than the one the offset is inside. The table's
         // first entry is 0 and `at` is not negative, so the subtraction cannot go below zero.
         val line = if found then i else i - 1
-        val start = self.starts.at(line)
+        val start = self.starts[line]
 
         Loc(line + 1, chars_of(self.bytes[start..<at]).count() + 1)
     end locate
@@ -140,8 +140,8 @@ struct Source
     line_span(self, line: usize) -> Span
         if line == 0 || line > self.starts.len() then return point(self.bytes.len)
 
-        val start = self.starts.at(line - 1)
-        var end = if line == self.starts.len() then self.bytes.len else self.starts.at(line) - 1
+        val start = self.starts[line - 1]
+        var end = if line == self.starts.len() then self.bytes.len else self.starts[line] - 1
 
         // The table steps past a `\n`, so the byte before the next line's start is that newline and
         // is already excluded. What is left to trim is the `\r` of a `\r\n` pair.

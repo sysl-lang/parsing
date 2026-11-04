@@ -241,7 +241,7 @@ private show(v: &Json) -> string
             for i in 0..<items.len()
                 if i > 0 then out = out + ","
 
-                out = out + show(items.at(i))
+                out = out + show(items[i])
 
             out + "]"
         Obj(keys, values) ->
@@ -250,7 +250,7 @@ private show(v: &Json) -> string
             for i in 0..<keys.len()
                 if i > 0 then out = out + ","
 
-                out = out + s"\"${keys.at(i)}\":" + show(values.at(i))
+                out = out + s"\"${keys[i]}\":" + show(values[i])
 
             out + "}"
 end show

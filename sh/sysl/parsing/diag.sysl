@@ -271,23 +271,23 @@ edit_distance(a: string, b: string) -> usize
         current.push(0)
 
     for i in 0..<x.len
-        current.set(0, i + 1)
+        current[0] = i + 1
 
         for j in 0..<y.len
-            val substitute = previous.at(j) + (if x[i] == y[j] then 0 else 1)
-            val insert = current.at(j) + 1
-            val remove = previous.at(j + 1) + 1
+            val substitute = previous[j] + (if x[i] == y[j] then 0 else 1)
+            val insert = current[j] + 1
+            val remove = previous[j + 1] + 1
             var least = substitute
 
             if insert < least then least = insert
             if remove < least then least = remove
 
-            current.set(j + 1, least)
+            current[j + 1] = least
 
         for j in 0..<(y.len + 1)
-            previous.set(j, current.at(j))
+            previous[j] = current[j]
 
-    previous.at(y.len)
+    previous[y.len]
 end edit_distance
 
 // The name a reader probably meant, where one of them is close enough to be worth offering.
@@ -309,10 +309,10 @@ nearest_name(want: string, among: Buf[string]) -> Option[string]
     var best_at: usize = 3
 
     for i in 0..<among.len()
-        val d = edit_distance(want, among.at(i))
+        val d = edit_distance(want, among[i])
 
         if d < best_at
-            best = among.at(i)
+            best = among[i]
             best_at = d
 
     val limit: usize = if want.bytes.len <= 4 then 1 else 2
@@ -372,7 +372,7 @@ struct Report
     len(self) -> usize = self.items.len()
 
     // The one at an index, for a caller walking what it collected.
-    at(self, i: usize) -> Diagnostic = self.items.at(i)
+    at(self, i: usize) -> Diagnostic = self.items[i]
 
     // Take everything another report gathered.
     //
@@ -390,7 +390,7 @@ struct Report
     // warnings alone is a successful run.
     has_errors(self) -> bool
         for i in 0..<self.items.len()
-            if self.items.at(i).is_error() then return true
+            if self.items[i].is_error() then return true
 
         false
     end has_errors
@@ -411,7 +411,7 @@ struct Report
         var order: Buf[Placed] = buf()
 
         for i in 0..<self.items.len()
-            order.push(Placed(self.items.at(i).span.start, i))
+            order.push(Placed(self.items[i].span.start, i))
 
         val xs = order.view()
 
@@ -422,7 +422,7 @@ struct Report
         for i in 0..<shown
             if i > 0 then b.push("\n")
 
-            b.push(self.items.at(xs[i].index).render(src, col_shift))
+            b.push(self.items[xs[i].index].render(src, col_shift))
 
         if shown < xs.len then
             b.push(s"\nshowing the first ${shown} of ${xs.len}\n")

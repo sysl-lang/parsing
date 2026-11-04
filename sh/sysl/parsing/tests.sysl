@@ -895,8 +895,8 @@ a_report_keeps_the_order_it_was_given_at_one_place()
 
     // And rendering is a reading rather than a writing: a caller that renders a report and then
     // walks it gets what it added, in the order it added it.
-    assert_eq(r.items.at(0).message, "m0")
-    assert_eq(r.items.at(19).message, "m19")
+    assert_eq(r.items[0].message, "m0")
+    assert_eq(r.items[19].message, "m19")
 end a_report_keeps_the_order_it_was_given_at_one_place
 
 // A line's text stops before its terminator and a `\r\n` is two bytes, so a span pointing at the
@@ -1893,12 +1893,12 @@ an_interpolated_literal_answers_its_chunks_and_its_holes()
     val r = interp("\"a ${x} b\"").unwrap()
 
     assert_eq(r.chunks.len(), 2)
-    assert_eq(r.chunks.at(0), "a ")
-    assert_eq(r.chunks.at(1), " b")
+    assert_eq(r.chunks[0], "a ")
+    assert_eq(r.chunks[1], " b")
     assert_eq(r.holes.len(), 1)
 
     // The span is the hole's contents, so a caller may hand exactly that to its grammar.
-    assert_eq(r.holes.at(0), Span(5, 6))
+    assert_eq(r.holes[0], Span(5, 6))
 end an_interpolated_literal_answers_its_chunks_and_its_holes
 
 @test
@@ -1908,15 +1908,15 @@ there_is_one_more_chunk_than_there_are_holes()
     val r = interp("\"${a}${b}\"").unwrap()
 
     assert_eq(r.chunks.len(), 3)
-    assert_eq(r.chunks.at(0), "")
-    assert_eq(r.chunks.at(1), "")
-    assert_eq(r.chunks.at(2), "")
+    assert_eq(r.chunks[0], "")
+    assert_eq(r.chunks[1], "")
+    assert_eq(r.chunks[2], "")
     assert_eq(r.holes.len(), 2)
 
     val plain = interp("\"nothing\"").unwrap()
 
     assert_eq(plain.chunks.len(), 1)
-    assert_eq(plain.chunks.at(0), "nothing")
+    assert_eq(plain.chunks[0], "nothing")
     assert(plain.holes.is_empty())
 end there_is_one_more_chunk_than_there_are_holes
 
@@ -1924,8 +1924,8 @@ end there_is_one_more_chunk_than_there_are_holes
 a_chunks_escapes_are_read_the_way_a_quoted_literals_are()
     val r = interp("\"a\\tb ${x}\\n\"").unwrap()
 
-    assert_eq(r.chunks.at(0), "a\tb ")
-    assert_eq(r.chunks.at(1), "\n")
+    assert_eq(r.chunks[0], "a\tb ")
+    assert_eq(r.chunks[1], "\n")
 
     // **A doubled sigil is a literal one**, which is the only way to write a `${` where a hole would
     // otherwise open. Nothing is escaped with a backslash here, `$` not being in anyone's escape set.
@@ -1933,7 +1933,7 @@ a_chunks_escapes_are_read_the_way_a_quoted_literals_are()
 
     assert(e.holes.is_empty())
     assert_eq(e.chunks.len(), 1)
-    assert_eq(e.chunks.at(0), "a ${x} b")
+    assert_eq(e.chunks[0], "a ${x} b")
 end a_chunks_escapes_are_read_the_way_a_quoted_literals_are
 
 @test
@@ -1942,17 +1942,17 @@ a_brace_inside_a_hole_nests_and_one_inside_a_string_does_not()
     // middle of the argument; one that does not follow a nested string stops at the wrong `}`.
     val nested = interp("\"${ { a: 1 } } tail\"").unwrap()
 
-    assert_eq(nested.chunks.at(1), " tail")
+    assert_eq(nested.chunks[1], " tail")
 
     val quoted = interp("\"${ f(\"}\") } tail\"").unwrap()
 
-    assert_eq(quoted.chunks.at(1), " tail")
+    assert_eq(quoted.chunks[1], " tail")
     assert_eq(quoted.holes.len(), 1)
 
     // A quote of either kind, since a grammar may spend both.
     val single = interp("\"${ f('}') } tail\"").unwrap()
 
-    assert_eq(single.chunks.at(1), " tail")
+    assert_eq(single.chunks[1], " tail")
 end a_brace_inside_a_hole_nests_and_one_inside_a_string_does_not
 
 @test
@@ -1966,7 +1966,7 @@ the_opener_and_the_closer_are_the_callers()
     var s = scanner_of("\"a #{x} b\"")
     val r = read_interpolated(&s, u8('"'), "#{".bytes, u8('}')).unwrap()
 
-    assert_eq(r.chunks.at(0), "a ")
+    assert_eq(r.chunks[0], "a ")
     assert_eq(r.holes.len(), 1)
 end the_opener_and_the_closer_are_the_callers
 
@@ -1977,9 +1977,9 @@ a_bare_name_after_the_sigil_is_a_hole_too()
     val r = named("\"$w by $h\"").unwrap()
 
     assert_eq(r.chunks.len(), 3)
-    assert_eq(r.chunks.at(0), "")
-    assert_eq(r.chunks.at(1), " by ")
-    assert_eq(r.chunks.at(2), "")
+    assert_eq(r.chunks[0], "")
+    assert_eq(r.chunks[1], " by ")
+    assert_eq(r.chunks[2], "")
     assert_eq(r.holes.len(), 2)
 
 @test
@@ -1989,7 +1989,7 @@ a_bare_hole_spans_exactly_its_name()
 
     val r = named("\"a $wide b\"").unwrap()
 
-    assert_eq(r.holes.at(0), Span(4, 8))
+    assert_eq(r.holes[0], Span(4, 8))
 
 @test
 A_DOUBLED_SIGIL_STAYS_A_SIGIL_WHEN_BARE_NAMES_ARE_ON()
@@ -2000,7 +2000,7 @@ A_DOUBLED_SIGIL_STAYS_A_SIGIL_WHEN_BARE_NAMES_ARE_ON()
     val doubled = named("\"$$w\"").unwrap()
 
     assert_eq(doubled.holes.len(), 0)
-    assert_eq(doubled.chunks.at(0), "$w")
+    assert_eq(doubled.chunks[0], "$w")
 
     val bare = named("\"$w\"").unwrap()
 
@@ -2014,23 +2014,23 @@ a_bare_name_stops_at_the_first_byte_that_cannot_continue_one()
     val r = named("\"$point.x\"").unwrap()
 
     assert_eq(r.holes.len(), 1)
-    assert_eq(r.chunks.at(1), ".x")
+    assert_eq(r.chunks[1], ".x")
 
 @test
 BOTH_FORMS_STAND_IN_ONE_LITERAL()
     val r = named("\"$a and ${b + c}\"").unwrap()
 
     assert_eq(r.holes.len(), 2)
-    assert_eq(r.chunks.at(1), " and ")
+    assert_eq(r.chunks[1], " and ")
 
 @test
 A_SIGIL_THAT_BEGINS_NO_NAME_IS_ORDINARY_TEXT()
     // **A trailing `$`, and a `$` before a digit or a space.** None of them opens a hole, so each is
     // the character it looks like -- which is what keeps a price or a shell snippet readable.
 
-    assert_eq(named("\"costs 5$\"").unwrap().chunks.at(0), "costs 5$")
-    assert_eq(named("\"$ x\"").unwrap().chunks.at(0), "$ x")
-    assert_eq(named("\"$1\"").unwrap().chunks.at(0), "$1")
+    assert_eq(named("\"costs 5$\"").unwrap().chunks[0], "costs 5$")
+    assert_eq(named("\"$ x\"").unwrap().chunks[0], "$ x")
+    assert_eq(named("\"$1\"").unwrap().chunks[0], "$1")
 
 @test
 THE_BARE_FORM_IS_OFF_FOR_read_interpolated()
@@ -2040,7 +2040,7 @@ THE_BARE_FORM_IS_OFF_FOR_read_interpolated()
     val r = interp("\"$w by $h\"").unwrap()
 
     assert_eq(r.holes.len(), 0)
-    assert_eq(r.chunks.at(0), "$w by $h")
+    assert_eq(r.chunks[0], "$w by $h")
 
 @test
 the_bare_sigil_follows_the_opener_the_caller_gave()
@@ -2051,8 +2051,8 @@ the_bare_sigil_follows_the_opener_the_caller_gave()
     val r = read_interpolated_named(&s, u8('"'), "#{".bytes, u8('}'), is_ident_start, is_ident_cont).unwrap()
 
     assert_eq(r.holes.len(), 1)
-    assert_eq(r.chunks.at(0), "a ")
-    assert_eq(r.chunks.at(1), " b")
+    assert_eq(r.chunks[0], "a ")
+    assert_eq(r.chunks[1], " b")
 
 // -- re-reading one slice of a source -----------------------------------------------------------
 
@@ -2361,7 +2361,7 @@ private words(kinds: Buf[Word]) -> Tokens[Word]
     var ts: Tokens[Word] = tokens()
 
     for i in 0..<kinds.len()
-        ts.push(kinds.at(i), point(i))
+        ts.push(kinds[i], point(i))
 
     ts
 end words

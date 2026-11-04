@@ -102,7 +102,7 @@ struct Openers
         if self.open.is_empty() then return Wrong("")
 
         val last = self.open.len() - 1
-        val inner = self.open.at(last)
+        val inner = self.open[last]
 
         if inner.word == found then return Mine
 
@@ -111,7 +111,7 @@ struct Openers
         while i > 0
             i -= 1
 
-            val o = self.open.at(i)
+            val o = self.open[i]
 
             if o.line != inner.line then break
             if o.word == found then return Outer

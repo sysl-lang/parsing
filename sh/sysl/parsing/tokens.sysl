@@ -57,13 +57,13 @@ struct Tokens[T]
     peek_at(self, n: usize) -> Option[Spanned[T]]
         val i = self.at + n
 
-        if i >= self.items.len() then None else Some(self.items.at(i))
+        if i >= self.items.len() then None else Some(self.items[i])
 
     // The token at the cursor, taken.
     advance(*self) -> Option[Spanned[T]]
         if self.at >= self.items.len() then return None
 
-        val t = self.items.at(self.at)
+        val t = self.items[self.at]
 
         self.at += 1
         Some(t)
@@ -98,14 +98,14 @@ struct Tokens[T]
                 if self.items.is_empty() then
                     point(0)
                 else
-                    point(self.items.at(self.items.len() - 1).span.end)
+                    point(self.items[self.items.len() - 1].span.end)
     end here
 
     // The span of the token just consumed, which is where "expected something after this" points.
     previous(self) -> Span
         if self.at == 0 then return point(0)
 
-        self.items.at(self.at - 1).span
+        self.items[self.at - 1].span
     end previous
 
     // The span from a mark to the cursor, which is a whole construct's extent: mark before parsing
@@ -117,7 +117,7 @@ struct Tokens[T]
         val to = if self.at == 0 then 0 else self.at - 1
         val last = if to >= self.items.len() then self.items.len() - 1 else to
 
-        self.items.at(from).span.to(self.items.at(last).span)
+        self.items[from].span.to(self.items[last].span)
     end span_from
 
     mark(self) -> usize = self.at
@@ -139,7 +139,7 @@ struct Tokens[T]
     looked_back(self) -> Option[Spanned[T]]
         if self.at == 0 then return None
 
-        Some(self.items.at(self.at - 1))
+        Some(self.items[self.at - 1])
     end looked_back
 end Tokens
 
@@ -186,7 +186,7 @@ end names_end
 // **An index rather than an offset from the cursor**, because a scan like `names_end` walks its own
 // way along and has no cursor of its own to be relative to.
 kind_at[T](toks: Tokens[T], i: usize) -> Option[T] =
-    if i >= toks.items.len() then None else Some(toks.items.at(i).value)
+    if i >= toks.items.len() then None else Some(toks.items[i].value)
 
 // An empty token list, to be filled by a lexer and then read by a parser.
 tokens[T]() -> Tokens[T] = Tokens(buf(), 0)
