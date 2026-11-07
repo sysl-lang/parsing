@@ -23,7 +23,7 @@
 
 package {
   name    = "parsing"
-  version = "0.14.1"
+  version = "0.14.2"
 
   // **The oldest compiler this builds with, and it is a released one.** Three of 0.0.76's changes
   // are written into these files rather than merely available to them: a `match` standing as an
@@ -35,8 +35,12 @@ package {
   // **This package is what raised all three.** Writing it is what found them, which is the argument
   // for a package existing at all: the toolkit is the first thing in the org that reads text for a
   // living, so it is the first thing to notice what reading text is awkward to write.
-  sysl = "0.8.0"
+  sysl = "0.9.8"
 }
+
+// **0.14.2 -- WRITES TO A BUFFER'S ELEMENTS GO THROUGH `view_mut()`.** From sysl 0.10.0 a `Buf`'s
+// `view()` answers a read-only `[]const T`, so `Diagnostics.render`'s sort of its position table takes
+// `view_mut()`, which sysl 0.9.8 is the first release to have. The floor is 0.9.8. **No API change.**
 
 // **0.14.0 -- NAMES ABOVE ASCII, AND NUMBERS WITHOUT SEPARATORS.** `Scanner.read_ident_wide` reads an
 // identifier whose ASCII bytes are answered by two `ByteSet`s and whose other characters are decoded
