@@ -413,7 +413,7 @@ struct Report
         for i in 0..<self.items.len()
             order.push(Placed(self.items[i].span.start, i))
 
-        val xs = order.view()
+        val xs = order.view_mut()
 
         sort_by(xs, (p, q) -> p.start < q.start || (p.start == q.start && p.index < q.index))
 
