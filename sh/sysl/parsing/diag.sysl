@@ -413,19 +413,17 @@ struct Report
         for i in 0..<self.items.len()
             order.push(Placed(self.items[i].span.start, i))
 
-        val xs = order.view_mut()
+        sort_by(order.view_mut(), (p, q) -> p.start < q.start || (p.start == q.start && p.index < q.index))
 
-        sort_by(xs, (p, q) -> p.start < q.start || (p.start == q.start && p.index < q.index))
-
-        val shown = if self.limit == 0 || self.limit > xs.len then xs.len else self.limit
+        val shown = if self.limit == 0 || self.limit > order.len() then order.len() else self.limit
 
         for i in 0..<shown
             if i > 0 then b.push("\n")
 
-            b.push(self.items[xs[i].index].render(src, col_shift))
+            b.push(self.items[order[i].index].render(src, col_shift))
 
-        if shown < xs.len then
-            b.push(s"\nshowing the first ${shown} of ${xs.len}\n")
+        if shown < order.len() then
+            b.push(s"\nshowing the first ${shown} of ${order.len()}\n")
 
         b.finish()
     end render
